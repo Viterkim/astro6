@@ -1,3 +1,5 @@
+local image_globs = require("utils.image_globs").patterns()
+
 local git_picker_layout = {
   layout = {
     box = "vertical",
@@ -15,6 +17,16 @@ local git_picker_layout = {
 return {
   "folke/snacks.nvim",
   opts = {
+    image = {
+      enabled = false,
+      formats = {},
+      doc = {
+        enabled = false,
+        inline = false,
+        float = false,
+      },
+    },
+
     dashboard = {
       preset = {
         header = table.concat({
@@ -36,6 +48,7 @@ return {
         }, "\n"),
       },
     },
+
     picker = {
       -- LSP auto fixes should not show up with the snacks picker by default
       ui_select = false,
@@ -53,11 +66,23 @@ return {
           { win = "list", border = "none" },
         },
       },
+
       sources = {
+        files = {
+          exclude = image_globs,
+        },
+        grep = {
+          exclude = image_globs,
+        },
+        grep_word = {
+          exclude = image_globs,
+        },
+
         git_status = { layout = vim.deepcopy(git_picker_layout) },
         git_log = { layout = vim.deepcopy(git_picker_layout) },
         git_branches = { layout = vim.deepcopy(git_picker_layout) },
       },
+
       win = {
         input = {
           keys = {
