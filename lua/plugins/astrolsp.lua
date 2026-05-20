@@ -11,7 +11,12 @@ return {
     formatting = {
       format_on_save = {
         enabled = true,
-        ignore_filetypes = { "typescript" },
+        ignore_filetypes = {
+          "javascript",
+          "javascriptreact",
+          "typescript",
+          "typescriptreact",
+        },
       },
       disabled = {
         "tsserver",

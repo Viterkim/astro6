@@ -66,10 +66,6 @@ local has_prettier = function(bufnr)
   return prettier_dependency or next(prettierrc_rooter(bufnr))
 end
 
-local null_ls_formatter = function(params)
-  return vim.tbl_contains(format_filetypes, params.filetype) and has_prettier(params.bufnr) or false
-end
-
 local conform_formatter = function(bufnr)
   if vim.tbl_contains(format_filetypes, vim.bo[bufnr].filetype) then
     return has_prettier(bufnr) and { "prettierd" } or {}
@@ -116,10 +112,8 @@ return {
     "WhoIsSethDaniel/mason-tool-installer.nvim",
     optional = true,
     opts = function(_, opts)
-      opts.ensure_installed = require("astrocore").list_insert_unique(
-        opts.ensure_installed or {},
-        { "eslint-lsp", "eslint_d", "prettierd" }
-      )
+      opts.ensure_installed =
+        require("astrocore").list_insert_unique(opts.ensure_installed or {}, { "eslint-lsp", "eslint_d", "prettierd" })
     end,
   },
   {

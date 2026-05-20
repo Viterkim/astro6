@@ -42,3 +42,7 @@ vim.api.nvim_create_user_command("UpdateAll", function()
   vim.cmd "AstroUpdate"
   vim.cmd "TSUpdate"
 end, { desc = "Update AstroNvim packages and Treesitter parsers" })
+
+vim.api.nvim_create_user_command("Rs", function() require("funcs").restart_with_session() end, {
+  desc = "Restart Neovim and restore real editing session",
+})

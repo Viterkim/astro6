@@ -23,6 +23,6 @@ return {
   { import = "astrocommunity.pack.json" },
   { import = "astrocommunity.pack.rust" },
   { import = "astrocommunity.pack.go" },
-  { import = "astrocommunity.pack.typescript" },
+  -- { import = "astrocommunity.pack.typescript" },
   { import = "astrocommunity.pack.yaml" },
 }

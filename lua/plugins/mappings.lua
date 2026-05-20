@@ -67,12 +67,31 @@ return {
         },
         ["<leader>if"] = { function() vim.lsp.buf.code_action() end, desc = "LSP Fixes" },
         ["<leader>id"] = { function() vim.diagnostic.open_float() end, desc = "Float diagnostics" },
+
         ["<leader>ic"] = {
           function()
-            vim.diagnostic.open_float()
-            vim.diagnostic.open_float()
-            vim.cmd "normal! ggVGy"
-            vim.cmd "close"
+            local bufnr = 0
+            local lnum = vim.api.nvim_win_get_cursor(0)[1] - 1
+            local diagnostics = vim.diagnostic.get(bufnr, { lnum = lnum })
+
+            if vim.tbl_isempty(diagnostics) then
+              vim.notify("No diagnostics on this line", vim.log.levels.INFO)
+              return
+            end
+
+            local lines = {}
+
+            for _, diagnostic in ipairs(diagnostics) do
+              local severity = vim.diagnostic.severity[diagnostic.severity] or "UNKNOWN"
+              table.insert(lines, ("[%s] %s"):format(severity, diagnostic.message))
+            end
+
+            local text = table.concat(lines, "\n")
+
+            vim.fn.setreg("+", text)
+            vim.fn.setreg('"', text)
+
+            vim.notify(("Copied %d diagnostic%s"):format(#diagnostics, #diagnostics == 1 and "" or "s"))
           end,
           desc = "Copy diagnostics",
         },

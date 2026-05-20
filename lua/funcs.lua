@@ -1,5 +1,9 @@
 local M = {}
 
+local function safe_cmd(cmd)
+  pcall(function() vim.cmd(cmd) end)
+end
+
 function M.sudoku_quit()
   local answer = vim.fn.input "Type sudoku to nuke all windows: "
   if answer ~= "sudoku" then
@@ -7,8 +11,8 @@ function M.sudoku_quit()
     return
   end
 
-  pcall(function() vim.cmd "Neotree close left" end)
-  pcall(function() vim.cmd "Neotree close right" end)
+  safe_cmd "Neotree close left"
+  safe_cmd "Neotree close right"
   vim.cmd "qa!"
 end
 
@@ -366,6 +370,68 @@ function M.visual_paste_keep_regs(cmd)
   vim.schedule(function() vim.fn.setreg(reg, saved.value, saved.regtype) end)
 
   return cmd
+end
+
+local function restart_session_file()
+  local dir = vim.fn.stdpath "state" .. "/restart-session"
+  vim.fn.mkdir(dir, "p")
+
+  local cwd = vim.uv.cwd() or vim.fn.getcwd()
+  local name = vim.fn.fnamemodify(cwd, ":p"):gsub("[/\\:]", "%%")
+
+  return dir .. "/" .. name .. ".vim"
+end
+
+local function close_session_poison()
+  safe_cmd "silent! Neotree close"
+  safe_cmd "silent! Neotree close left"
+  safe_cmd "silent! Neotree close right"
+  safe_cmd "silent! AerialClose"
+
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    local ft = vim.bo[buf].filetype
+
+    if ft == "neo-tree" or ft == "aerial" then pcall(vim.api.nvim_win_close, win, true) end
+  end
+
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local ft = vim.bo[buf].filetype
+
+    if ft == "neo-tree" or ft == "aerial" then pcall(vim.api.nvim_buf_delete, buf, { force = true }) end
+  end
+end
+
+local function append_restart_commands(file)
+  vim.fn.writefile({
+    "",
+    '" Re-open disposable UI after real session state has been restored.',
+    "lua vim.schedule(function() pcall(function() vim.cmd [[silent! Neotree reveal left]] end) pcall(function() vim.cmd [[wincmd p]] end) end)",
+  }, file, "a")
+end
+
+function M.restart_with_session()
+  save_all_real_files()
+  close_session_poison()
+
+  local file = restart_session_file()
+  local old_sessionoptions = vim.o.sessionoptions
+
+  vim.opt.sessionoptions = {
+    "buffers",
+    "curdir",
+    "folds",
+    "tabpages",
+    "winsize",
+    "terminal",
+  }
+
+  vim.cmd("silent! mksession! " .. vim.fn.fnameescape(file))
+  vim.o.sessionoptions = old_sessionoptions
+
+  append_restart_commands(file)
+
+  vim.cmd("restart source " .. vim.fn.fnameescape(file))
 end
 
 return M
