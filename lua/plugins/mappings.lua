@@ -55,7 +55,15 @@ return {
           desc = "Find current word literally",
         },
 
+        -- leader k
+        ["<leader>k"] = { desc = "Own k" },
+        ["<leader>kc"] = {
+          function() require("funcs").close_hidden_file_buffers() end,
+          desc = "Close hidden buffers",
+        },
+
         -- leader i
+        ["<leader>i"] = { desc = "Own i" },
         ["<leader>iæ"] = {
           function()
             local bufnr = 0
@@ -65,7 +73,23 @@ return {
           end,
           desc = "Toggle Diagnostics",
         },
-        ["<leader>if"] = { function() vim.lsp.buf.code_action() end, desc = "LSP Fixes" },
+        ["<leader>if"] = {
+          function()
+            vim.lsp.buf.code_action {
+              filter = function(action, client_id)
+                local client = vim.lsp.get_client_by_id(client_id)
+                local title = action.title or ""
+
+                if client and (client.name == "rust-analyzer" or client.name == "rust_analyzer") then
+                  return title:sub(1, #"Generate delegate") ~= "Generate delegate"
+                end
+
+                return true
+              end,
+            }
+          end,
+          desc = "LSP Fixes",
+        },
         ["<leader>id"] = { function() vim.diagnostic.open_float() end, desc = "Float diagnostics" },
 
         ["<leader>ic"] = {
@@ -112,7 +136,6 @@ return {
         ["<leader>ib"] = { "<cmd>RustLsp debug<cr>", desc = "Debug Function" },
         ["<leader>ip"] = { "<cmd>AerialPrev<cr><cmd>RustLsp debug<cr>", desc = "Debug Prev Func" },
         ["<leader>io"] = { function() require("crates").show_features_popup() end, desc = "Crate Features" },
-        ["<leader>iu"] = { "<cmd>AerialNavOpen<cr>", desc = "Aerial Nav" },
         ["<leader>is"] = {
           "<cmd>AerialPrev<cr><cmd>RustLsp hover actions<cr><cmd>RustLsp hover actions<cr>",
           desc = "Hover Actions",

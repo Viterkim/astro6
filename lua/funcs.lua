@@ -93,6 +93,34 @@ local function save_all_real_files()
   end
 end
 
+function M.close_hidden_file_buffers()
+  local keep = {}
+
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(win) then keep[vim.api.nvim_win_get_buf(win)] = true end
+  end
+
+  local closed = 0
+  local skipped_modified = 0
+
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if is_real_file_buffer(bufnr) and not keep[bufnr] then
+      if vim.bo[bufnr].modified then
+        skipped_modified = skipped_modified + 1
+      else
+        local ok = pcall(vim.api.nvim_buf_delete, bufnr, {})
+        if ok then closed = closed + 1 end
+      end
+    end
+  end
+
+  local msg = ("Closed %d hidden buffer%s"):format(closed, closed == 1 and "" or "s")
+
+  if skipped_modified > 0 then msg = msg .. ("; skipped %d modified"):format(skipped_modified) end
+
+  vim.notify(msg)
+end
+
 local function close_new_buffers(before, keep_buf)
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if not before[bufnr] and is_real_file_buffer(bufnr) and bufnr ~= keep_buf and not vim.bo[bufnr].modified then
@@ -252,17 +280,6 @@ local function replace_generated_todos_with_braces(open_pos)
   vim.api.nvim_buf_set_lines(0, start_row - 1, end_row, false, lines)
 end
 
-local function looks_like_organize_imports_action(action)
-  local title = (action.title or ""):lower()
-  local kind = action.kind or ""
-
-  return kind == "source.organizeImports"
-    or vim.startswith(kind, "source.organizeImports")
-    or title:find("remove unused imports", 1, true) ~= nil
-    or title:find("remove all unused imports", 1, true) ~= nil
-    or title:find("organize imports", 1, true) ~= nil
-end
-
 local function apply_first_matching_code_action(filter, context, timeout_ms)
   local bufnr = vim.api.nvim_get_current_buf()
   local clients = vim.lsp.get_clients { bufnr = bufnr, method = "textDocument/codeAction" }
@@ -324,23 +341,6 @@ function M.rust_fill_match_arms_smart()
   vim.defer_fn(function() replace_generated_todos_with_braces(open_pos) end, 120)
 end
 
-function M.rust_remove_unused_imports_this_file()
-  if vim.bo.filetype ~= "rust" then return end
-
-  vim.cmd.stopinsert()
-
-  local ok = apply_first_matching_code_action(looks_like_organize_imports_action, {
-    only = { "source.organizeImports" },
-    diagnostics = {},
-  })
-
-  if ok then
-    vim.cmd "silent update"
-  else
-    vim.notify("No remove-unused-imports action found", vim.log.levels.INFO)
-  end
-end
-
 function M.select_whole_file() vim.cmd.normal { args = { "gg0vG$" }, bang = true } end
 
 local function visual_paste_restore_reg()
@@ -372,66 +372,240 @@ function M.visual_paste_keep_regs(cmd)
   return cmd
 end
 
-local function restart_session_file()
+local restart_state_env = "NVIM_RESTART_SESSION_STATE"
+
+local function restart_state_file()
   local dir = vim.fn.stdpath "state" .. "/restart-session"
   vim.fn.mkdir(dir, "p")
-
-  local cwd = vim.uv.cwd() or vim.fn.getcwd()
-  local name = vim.fn.fnamemodify(cwd, ":p"):gsub("[/\\:]", "%%")
-
-  return dir .. "/" .. name .. ".vim"
+  return ("%s/pending-%d-%d.json"):format(dir, vim.fn.getpid(), vim.uv.hrtime())
 end
 
-local function close_session_poison()
-  safe_cmd "silent! Neotree close"
-  safe_cmd "silent! Neotree close left"
-  safe_cmd "silent! Neotree close right"
-  safe_cmd "silent! AerialClose"
+local function pending_restart_state_file()
+  local file = vim.env[restart_state_env]
+  if type(file) == "string" and file ~= "" then return file end
+end
 
+local function window_with_filetype(filetype)
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     local buf = vim.api.nvim_win_get_buf(win)
-    local ft = vim.bo[buf].filetype
-
-    if ft == "neo-tree" or ft == "aerial" then pcall(vim.api.nvim_win_close, win, true) end
-  end
-
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    local ft = vim.bo[buf].filetype
-
-    if ft == "neo-tree" or ft == "aerial" then pcall(vim.api.nvim_buf_delete, buf, { force = true }) end
+    if vim.bo[buf].filetype == filetype then return win end
   end
 end
 
-local function append_restart_commands(file)
-  vim.fn.writefile({
-    "",
-    '" Re-open disposable UI after real session state has been restored.',
-    "lua vim.schedule(function() pcall(function() vim.cmd [[silent! Neotree reveal left]] end) pcall(function() vim.cmd [[wincmd p]] end) end)",
-  }, file, "a")
+local function save_restart_state()
+  local file = restart_state_file()
+  local state = {
+    cwd = vim.uv.cwd() or vim.fn.getcwd(),
+    neo_tree_open = window_with_filetype "neo-tree" ~= nil,
+    aerial_open = window_with_filetype "aerial" ~= nil,
+  }
+
+  vim.fn.writefile({ vim.json.encode(state) }, file)
+  vim.fn.setenv(restart_state_env, file)
+  return file
+end
+
+function M.restore_after_restart()
+  local file = pending_restart_state_file()
+  if not file then return end
+
+  vim.fn.setenv(restart_state_env, "")
+  if vim.fn.filereadable(file) == 0 then return end
+
+  local raw = table.concat(vim.fn.readfile(file), "\n")
+  pcall(vim.fn.delete, file)
+
+  local ok, state = pcall(vim.json.decode, raw)
+  if not ok or type(state) ~= "table" then return end
+
+  vim.schedule(function()
+    if state.cwd and state.cwd ~= "" then pcall(vim.cmd, "cd " .. vim.fn.fnameescape(state.cwd)) end
+
+    pcall(function()
+      require("resession").load(state.cwd, {
+        dir = "dirsession",
+        silence_errors = true,
+      })
+    end)
+
+    vim.defer_fn(function()
+      if state.neo_tree_open then safe_cmd "silent! Neotree left" end
+      if state.aerial_open then safe_cmd "silent! AerialOpen" end
+      safe_cmd "wincmd p"
+    end, 100)
+  end)
 end
 
 function M.restart_with_session()
   save_all_real_files()
-  close_session_poison()
+  local file = save_restart_state()
 
-  local file = restart_session_file()
-  local old_sessionoptions = vim.o.sessionoptions
+  local resession = require "resession"
+  local cwd = vim.uv.cwd() or vim.fn.getcwd()
 
-  vim.opt.sessionoptions = {
-    "buffers",
-    "curdir",
-    "folds",
-    "tabpages",
-    "winsize",
-    "terminal",
+  local ok, err = pcall(function()
+    safe_cmd "silent! Neotree close"
+    safe_cmd "silent! AerialClose"
+
+    resession.save(cwd, {
+      dir = "dirsession",
+      notify = false,
+      attach = false,
+    })
+
+    vim.cmd "restart"
+  end)
+
+  if not ok then
+    vim.fn.setenv(restart_state_env, "")
+    pcall(vim.fn.delete, file)
+    error(err)
+  end
+end
+
+function M.rust_remove_unused_imports_this_file()
+  if vim.bo.filetype ~= "rust" then return end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+
+  local client
+  for _, c in ipairs(vim.lsp.get_clients { bufnr = bufnr, method = "textDocument/codeAction" }) do
+    if c.name == "rust-analyzer" or c.name == "rust_analyzer" then
+      client = c
+      break
+    end
+  end
+
+  if not client then
+    vim.notify("No rust-analyzer attached", vim.log.levels.WARN)
+    return
+  end
+
+  local function clean_code(code)
+    if type(code) == "table" then code = code.code or code.value end
+    if type(code) == "string" or type(code) == "number" then return code end
+    return nil
+  end
+
+  local function raw_lsp_diagnostic(diagnostic)
+    local user_data = diagnostic.user_data
+    if type(user_data) == "table" and type(user_data.lsp) == "table" then return user_data.lsp end
+    return nil
+  end
+
+  local function is_unused_import(diagnostic)
+    local lsp = raw_lsp_diagnostic(diagnostic)
+    local code = clean_code(diagnostic.code) or clean_code(lsp and lsp.code)
+    local message = ((diagnostic.message or "") .. " " .. ((lsp and lsp.message) or "")):lower()
+
+    code = tostring(code or ""):lower()
+
+    return code == "unused_imports"
+      or code:find("unused_import", 1, true) ~= nil
+      or message:find("unused import", 1, true) ~= nil
+      or message:find("unused imports", 1, true) ~= nil
+  end
+
+  local function to_lsp_diagnostic(diagnostic)
+    local lsp = raw_lsp_diagnostic(diagnostic)
+    if type(lsp) == "table" and type(lsp.range) == "table" then
+      return {
+        range = lsp.range,
+        severity = lsp.severity,
+        code = clean_code(lsp.code),
+        source = lsp.source,
+        message = lsp.message or diagnostic.message or "",
+        tags = type(lsp.tags) == "table" and lsp.tags or nil,
+        data = lsp.data,
+      }
+    end
+
+    return {
+      range = {
+        start = {
+          line = diagnostic.lnum or 0,
+          character = diagnostic.col or 0,
+        },
+        ["end"] = {
+          line = diagnostic.end_lnum or diagnostic.lnum or 0,
+          character = diagnostic.end_col or diagnostic.col or 0,
+        },
+      },
+      severity = diagnostic.severity,
+      code = clean_code(diagnostic.code),
+      source = diagnostic.source,
+      message = diagnostic.message or "",
+    }
+  end
+
+  local diagnostics = vim.tbl_filter(is_unused_import, vim.diagnostic.get(bufnr))
+  if #diagnostics == 0 then
+    vim.notify("No unused-import diagnostics in this buffer", vim.log.levels.INFO)
+    return
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local last_line = vim.api.nvim_buf_get_lines(bufnr, line_count - 1, line_count, false)[1] or ""
+  local params = {
+    textDocument = vim.lsp.util.make_text_document_params(bufnr),
+    range = {
+      start = { line = 0, character = 0 },
+      ["end"] = { line = line_count - 1, character = #last_line },
+    },
+    context = {
+      diagnostics = vim.tbl_map(to_lsp_diagnostic, diagnostics),
+      only = { "quickfix" },
+    },
   }
 
-  vim.cmd("silent! mksession! " .. vim.fn.fnameescape(file))
-  vim.o.sessionoptions = old_sessionoptions
+  local response = client:request_sync("textDocument/codeAction", params, 3000, bufnr)
+  local actions = response and response.result or {}
+  local best
+  local best_score = 999
 
-  append_restart_commands(file)
+  for _, action in ipairs(actions) do
+    local title = (action.title or ""):lower()
+    local score
 
-  vim.cmd("restart source " .. vim.fn.fnameescape(file))
+    if title:find("remove all", 1, true) and title:find("unused import", 1, true) then
+      score = 1
+    elseif title:find("remove", 1, true) and title:find("unused imports", 1, true) then
+      score = 2
+    elseif title:find("remove", 1, true) and title:find("unused import", 1, true) then
+      score = 3
+    elseif title:find("delete", 1, true) and title:find("unused import", 1, true) then
+      score = 4
+    end
+
+    if score and score < best_score then
+      best = action
+      best_score = score
+    end
+  end
+
+  if not best then
+    vim.notify("No remove-unused-import code action from rust-analyzer", vim.log.levels.INFO)
+    return
+  end
+
+  if not best.edit and not best.command and client:supports_method("codeAction/resolve", bufnr) then
+    local resolved = client:request_sync("codeAction/resolve", best, 3000, bufnr)
+    best = resolved and resolved.result or best
+  end
+
+  if best.edit then vim.lsp.util.apply_workspace_edit(best.edit, client.offset_encoding) end
+  if type(best.command) == "table" then
+    client:exec_cmd(best.command, { bufnr = bufnr })
+  elseif type(best.command) == "string" then
+    client:exec_cmd({
+      title = best.title,
+      command = best.command,
+      arguments = best.arguments,
+    }, { bufnr = bufnr })
+  end
+
+  vim.cmd "silent update"
+  vim.notify(("Applied: %s"):format(best.title or "remove unused imports"))
 end
 
 return M

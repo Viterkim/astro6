@@ -21,9 +21,9 @@ return {
       backends = { "lsp", "treesitter", "markdown", "man" },
       layout = {
         min_width = 28,
-        max_width = { 60, 0.35 },
-        resize_to_content = true,
-        preserve_equality = true,
+        max_width = 60,
+        resize_to_content = false,
+        preserve_equality = false,
       },
       show_guides = true,
       filter_kind = false,

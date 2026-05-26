@@ -43,6 +43,25 @@ vim.api.nvim_create_user_command("UpdateAll", function()
   vim.cmd "TSUpdate"
 end, { desc = "Update AstroNvim packages and Treesitter parsers" })
 
-vim.api.nvim_create_user_command("Rs", function() require("funcs").restart_with_session() end, {
-  desc = "Restart Neovim and restore real editing session",
+vim.api.nvim_create_user_command("Res", function() require("funcs").restart_with_session() end, {
+  desc = "Restart Neovim and restore session",
+})
+
+vim.api.nvim_create_autocmd("VimEnter", {
+  group = vim.api.nvim_create_augroup("restore_after_res_restart", { clear = true }),
+  once = true,
+  callback = function()
+    require("funcs").restore_after_restart()
+  end,
+})
+
+vim.opt.equalalways = false
+
+vim.api.nvim_create_autocmd("FileType", {
+  group = vim.api.nvim_create_augroup("stable_sidebar_widths", { clear = true }),
+  pattern = { "neo-tree", "aerial" },
+  callback = function()
+    vim.opt_local.winfixwidth = true
+    vim.opt_local.winfixheight = false
+  end,
 })
