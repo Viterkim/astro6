@@ -5,7 +5,15 @@ return {
   opts = {
     colorscheme = "tokyonight-storm",
     highlights = {
-      init = {},
+      init = {
+        -- Rust analyzer marks unreachable/inactive code as unnecessary. Tokyonight makes that impossible to read, fixerino:
+        DiagnosticUnnecessary = { fg = "#9aa5ce", italic = false },
+        DiagnosticDeprecated = { fg = "#a9b1d6", italic = false, strikethrough = false },
+        DiagnosticVirtualTextUnnecessary = { fg = "#9aa5ce", italic = false },
+        DiagnosticVirtualTextDeprecated = { fg = "#a9b1d6", italic = false, strikethrough = false },
+        ["@lsp.mod.unnecessary"] = { fg = "#9aa5ce", italic = false },
+        ["@lsp.mod.deprecated"] = { fg = "#a9b1d6", italic = false, strikethrough = false },
+      },
       astrodark = {},
     },
     icons = {
