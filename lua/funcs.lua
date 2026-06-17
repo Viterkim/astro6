@@ -608,4 +608,86 @@ function M.rust_remove_unused_imports_this_file()
   vim.notify(("Applied: %s"):format(best.title or "remove unused imports"))
 end
 
+function M.open_current_file_codediff()
+  local current_file = vim.api.nvim_buf_get_name(0)
+  if current_file == "" then
+    vim.notify("Current buffer is not a file", vim.log.levels.ERROR)
+    return
+  end
+
+  local git = require "codediff.core.git"
+  local view = require "codediff.ui.view"
+
+  git.get_git_root(current_file, function(err_root, git_root)
+    if err_root then
+      vim.schedule(function() vim.notify(err_root, vim.log.levels.ERROR) end)
+      return
+    end
+
+    local relative_path = git.get_relative_path(current_file, git_root)
+    local abs_path = git_root .. "/" .. relative_path
+    local filetype = vim.bo[0].filetype
+    if not filetype or filetype == "" then filetype = vim.filetype.match { filename = current_file } or "" end
+
+    git.get_status(git_root, function(err_status, status_result)
+      if err_status then
+        vim.schedule(function() vim.notify(err_status, vim.log.levels.ERROR) end)
+        return
+      end
+
+      local function find_file(files)
+        for _, file in ipairs(files or {}) do
+          if file.path == relative_path then return file end
+        end
+      end
+
+      local unstaged = find_file(status_result.unstaged)
+      local staged = find_file(status_result.staged)
+      local conflict = find_file(status_result.conflicts)
+
+      if conflict then
+        vim.schedule(function() vim.notify("Use <Leader>jg for conflict previews", vim.log.levels.INFO) end)
+        return
+      end
+
+      if not unstaged and not staged then
+        vim.schedule(function() vim.notify("No staged or unstaged changes for current file", vim.log.levels.INFO) end)
+        return
+      end
+
+      git.resolve_revision("HEAD", git_root, function(err_resolve, head)
+        if err_resolve then
+          vim.schedule(function() vim.notify(err_resolve, vim.log.levels.ERROR) end)
+          return
+        end
+
+        local session_config
+        if unstaged then
+          session_config = {
+            mode = "standalone",
+            git_root = git_root,
+            original_path = relative_path,
+            modified_path = abs_path,
+            original_revision = staged and ":0" or head,
+            modified_revision = nil,
+            layout = "side-by-side",
+          }
+        else
+          session_config = {
+            mode = "standalone",
+            git_root = git_root,
+            original_path = staged.old_path or relative_path,
+            modified_path = relative_path,
+            original_revision = head,
+            modified_revision = ":0",
+            layout = "side-by-side",
+          }
+        end
+
+        vim.schedule(function() view.create(session_config, filetype) end)
+      end)
+    end)
+  end)
+end
+
 return M

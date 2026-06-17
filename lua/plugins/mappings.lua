@@ -148,6 +148,76 @@ return {
           desc = "Hover Enter",
         },
 
+        -- leader j (Git browsing)
+        ["<leader>j"] = { desc = "Git browse" },
+        ["<leader>jg"] = {
+          "<cmd>CodeDiff<cr>",
+          desc = "Staged and unstaged changes",
+        },
+        ["<leader>jt"] = {
+          function()
+            require("snacks").picker.git_log {
+              confirm = function(picker, item)
+                picker:close()
+                if not item or not item.commit then return end
+
+                vim.schedule(
+                  function()
+                    vim.api.nvim_cmd({
+                      cmd = "CodeDiff",
+                      args = { item.commit },
+                    }, {})
+                  end
+                )
+              end,
+            }
+          end,
+          desc = "Pick commit and compare with now",
+        },
+        ["<leader>jl"] = {
+          "<cmd>CodeDiff history<cr>",
+          desc = "Browse individual commits",
+        },
+        ["<leader>jo"] = {
+          function() require("funcs").open_current_file_codediff() end,
+          desc = "Preview current file changes",
+        },
+
+        ["<leader>jh"] = {
+          function()
+            vim.ui.select({
+              "── Open views ───────────────────────────────────",
+              "<Leader>jg   Browse staged and unstaged changes",
+              "<Leader>jo   Preview current file changes",
+              "<Leader>jt   Choose commit and compare it with now",
+              "<Leader>jl   Browse what individual commits changed",
+              "",
+              "── Inside CodeDiff ──────────────────────────────",
+              "<Up>/<Down>  Browse files and update the diff",
+              "<Enter>      Open selected commit or file",
+              "f            Focus CodeDiff sidebar",
+              "b            Hide / show CodeDiff sidebar",
+              "H / h        Move left / right between windows",
+              "k / K        Move down / up between windows",
+              "j / J        Jump back / forward",
+              "e / n        Next / previous change across files",
+              "]f / [f      Next / previous changed file",
+              "gf           Open real file in previous tab",
+              "gt / gT      Switch between editor and CodeDiff",
+              "t            Toggle side-by-side / inline view",
+              "gc           Toggle compact unchanged sections",
+              "-            Stage / unstage current file",
+              "R            Refresh changed files",
+              "i            Toggle list / tree view",
+              "g?           Show CodeDiff built-in help",
+              "q            Close the complete CodeDiff tab",
+            }, {
+              prompt = "CodeDiff help",
+            }, function() end)
+          end,
+          desc = "CodeDiff help",
+        },
+
         -- leader s (fixes / convenience)
         ["<leader>s"] = { desc = "Fixes" },
         ["<leader>sf"] = {

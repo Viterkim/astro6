@@ -25,4 +25,7 @@ return {
   { import = "astrocommunity.pack.go" },
   -- { import = "astrocommunity.pack.typescript" },
   { import = "astrocommunity.pack.yaml" },
+
+  -- === Git ===
+  { import = "astrocommunity.git.codediff-nvim" },
 }
