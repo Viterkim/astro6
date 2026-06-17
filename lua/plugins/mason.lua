@@ -4,18 +4,19 @@ return {
     opts = {
       run_on_start = false,
       ensure_installed = {
-        -- core
+        -- Core
         "lua-language-server",
         "stylua",
         "tree-sitter-cli",
 
-        -- rust
+        -- Rust
         "rust-analyzer",
         "codelldb",
 
-        -- typescript / javascript
+        -- TypeScript / JavaScript
         "vtsls",
         "js-debug-adapter",
+        "eslint-lsp",
         "eslint_d",
       },
     },
