@@ -421,12 +421,14 @@ function M.restore_after_restart()
   vim.schedule(function()
     if state.cwd and state.cwd ~= "" then pcall(vim.cmd, "cd " .. vim.fn.fnameescape(state.cwd)) end
 
-    pcall(function()
-      require("resession").load(state.cwd, {
-        dir = "dirsession",
-        silence_errors = true,
-      })
-    end)
+    pcall(
+      function()
+        require("resession").load(state.cwd, {
+          dir = "dirsession",
+          silence_errors = true,
+        })
+      end
+    )
 
     vim.defer_fn(function()
       if state.neo_tree_open then safe_cmd "silent! Neotree left" end
@@ -646,7 +648,7 @@ function M.open_current_file_codediff()
       local conflict = find_file(status_result.conflicts)
 
       if conflict then
-        vim.schedule(function() vim.notify("Use <Leader>jg for conflict previews", vim.log.levels.INFO) end)
+        vim.schedule(function() vim.notify("Use <Leader>rr for conflict previews", vim.log.levels.INFO) end)
         return
       end
 
@@ -688,6 +690,35 @@ function M.open_current_file_codediff()
       end)
     end)
   end)
+end
+
+function M.continue_codediff()
+  local current_file = vim.api.nvim_buf_get_name(0)
+  if current_file ~= "" then
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    vim.g.viter_codediff_continue_file = current_file
+    vim.g.viter_codediff_continue_line = cursor[1]
+    vim.g.viter_codediff_continue_col = cursor[2]
+    vim.cmd "CodeDiff"
+    return
+  end
+
+  local root = vim.g.viter_codediff_last_root
+  local relative_path = vim.g.viter_codediff_last_file
+
+  if type(root) ~= "string" or root == "" or type(relative_path) ~= "string" or relative_path == "" then
+    vim.notify("No CodeDiff position to continue", vim.log.levels.INFO)
+    return
+  end
+
+  local path = root .. "/" .. relative_path
+  if vim.fn.filereadable(path) == 0 then
+    vim.notify("Last CodeDiff file no longer exists: " .. relative_path, vim.log.levels.WARN)
+    return
+  end
+
+  vim.cmd("edit " .. vim.fn.fnameescape(path))
+  vim.cmd "CodeDiff"
 end
 
 return M

@@ -33,7 +33,7 @@ return {
 
       mappings = {
         -- Do not let Neo-tree take over the global leader key.
-        ["<Space>"] = "none",
+        ["<space>"] = false,
 
         ["H"] = function() require("smart-splits").move_cursor_left() end,
         ["h"] = function() require("smart-splits").move_cursor_right() end,

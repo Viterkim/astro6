@@ -1,4 +1,9 @@
 local image_globs = require("utils.image_globs").patterns()
+local picker_excludes = vim.list_extend(vim.deepcopy(image_globs), {
+  ".git",
+  "node_modules",
+  "garage",
+})
 
 local git_picker_layout = {
   layout = {
@@ -16,6 +21,15 @@ local git_picker_layout = {
 
 return {
   "folke/snacks.nvim",
+  init = function()
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "SnacksDashboardOpened",
+      once = true,
+      callback = function()
+        if vim.fn.argc() == 0 then vim.cmd "Neotree show filesystem left" end
+      end,
+    })
+  end,
   opts = {
     image = {
       enabled = false,
@@ -69,13 +83,16 @@ return {
 
       sources = {
         files = {
-          exclude = image_globs,
+          hidden = true,
+          exclude = picker_excludes,
         },
         grep = {
-          exclude = image_globs,
+          hidden = true,
+          exclude = picker_excludes,
         },
         grep_word = {
-          exclude = image_globs,
+          hidden = true,
+          exclude = picker_excludes,
         },
 
         git_status = { layout = vim.deepcopy(git_picker_layout) },

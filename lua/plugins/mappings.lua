@@ -148,13 +148,17 @@ return {
           desc = "Hover Enter",
         },
 
-        -- leader j (Git browsing)
-        ["<leader>j"] = { desc = "Git browse" },
-        ["<leader>jg"] = {
+        -- leader r (Git browsing)
+        ["<leader>r"] = { desc = "Git browse" },
+        ["<leader>rr"] = {
           "<cmd>CodeDiff<cr>",
-          desc = "Staged and unstaged changes",
+          desc = "Staged, unstaged, and conflict changes",
         },
-        ["<leader>jt"] = {
+        ["<leader>rc"] = {
+          function() require("funcs").continue_codediff() end,
+          desc = "Continue CodeDiff",
+        },
+        ["<leader>rt"] = {
           function()
             require("snacks").picker.git_log {
               confirm = function(picker, item)
@@ -174,45 +178,46 @@ return {
           end,
           desc = "Pick commit and compare with now",
         },
-        ["<leader>jl"] = {
+        ["<leader>rl"] = {
           "<cmd>CodeDiff history<cr>",
           desc = "Browse individual commits",
         },
-        ["<leader>jo"] = {
+        ["<leader>ro"] = {
           function() require("funcs").open_current_file_codediff() end,
           desc = "Preview current file changes",
         },
 
-        ["<leader>jh"] = {
+        ["<leader>rh"] = {
           function()
             vim.ui.select({
               "── Open views ───────────────────────────────────",
-              "<Leader>jg   Browse staged and unstaged changes",
-              "<Leader>jo   Preview current file changes",
-              "<Leader>jt   Choose commit and compare it with now",
-              "<Leader>jl   Browse what individual commits changed",
+              "<Leader>rr   Browse staged, unstaged, or conflict changes",
+              "<Leader>rc   Continue last CodeDiff position",
+              "<Leader>ro   Preview current file changes",
+              "<Leader>rt   Choose commit and compare it with now",
+              "<Leader>rl   Browse what individual commits changed",
+              "<Leader>rh   Show this help",
               "",
               "── Inside CodeDiff ──────────────────────────────",
               "<Up>/<Down>  Browse files and update the diff",
               "<Enter>      Open selected commit or file",
               "f            Focus CodeDiff sidebar",
-              "b            Hide / show CodeDiff sidebar",
+              "o            Hide / show CodeDiff sidebar",
               "H / h        Move left / right between windows",
               "k / K        Move down / up between windows",
               "j / J        Jump back / forward",
               "e / n        Next / previous change across files",
-              "]f / [f      Next / previous changed file",
-              "gf           Open real file in previous tab",
+              "u / l        Next / previous changed file",
+              "i            Open real file and close CodeDiff",
               "gt / gT      Switch between editor and CodeDiff",
               "t            Toggle side-by-side / inline view",
               "gc           Toggle compact unchanged sections",
               "-            Stage / unstage current file",
               "R            Refresh changed files",
-              "i            Toggle list / tree view",
               "g?           Show CodeDiff built-in help",
               "q            Close the complete CodeDiff tab",
             }, {
-              prompt = "CodeDiff help",
+              prompt = "Git browse / CodeDiff help",
             }, function() end)
           end,
           desc = "CodeDiff help",
