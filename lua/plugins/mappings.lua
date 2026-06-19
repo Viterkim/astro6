@@ -281,7 +281,13 @@ return {
         -- other
         ["__"] = { ":w<cr>", desc = "Save File" },
         ["<Backspace>"] = { "x", desc = "Delete char" },
+        ["c"] = { '"_c', desc = "Change" },
+        ["C"] = { '"_C', desc = "Change until EOL" },
+        ["d"] = { '"_d', desc = "Delete" },
+        ["D"] = { '"_D', desc = "Delete until EOL" },
         ["de"] = { "<S-v>ygvd", desc = "Cut Line" },
+        ["x"] = { '"_x', desc = "Delete char" },
+        ["X"] = { '"_X', desc = "Delete char before cursor" },
         ["<S-Up>"] = { "<cmd>m-2<cr>", desc = "Move line up" },
         ["<S-Down>"] = { "<cmd>m+<cr>", desc = "Move line down" },
         ["<S-l>"] = { "<cmd>:call vm#commands#add_cursor_up(0, 1)<cr>", desc = "Multicursor up" },
