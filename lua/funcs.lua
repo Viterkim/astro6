@@ -372,17 +372,14 @@ function M.visual_paste_keep_regs(cmd)
   return cmd
 end
 
-local restart_state_env = "NVIM_RESTART_SESSION_STATE"
-
-local function restart_state_file()
+local function restart_session_file()
   local dir = vim.fn.stdpath "state" .. "/restart-session"
   vim.fn.mkdir(dir, "p")
-  return ("%s/pending-%d-%d.json"):format(dir, vim.fn.getpid(), vim.uv.hrtime())
-end
 
-local function pending_restart_state_file()
-  local file = vim.env[restart_state_env]
-  if type(file) == "string" and file ~= "" then return file end
+  local cwd = vim.uv.cwd() or vim.fn.getcwd()
+  local name = vim.fn.fnamemodify(cwd, ":p"):gsub("[/\\:]", "%%")
+
+  return dir .. "/" .. name .. ".vim"
 end
 
 local function window_with_filetype(filetype)
@@ -392,77 +389,122 @@ local function window_with_filetype(filetype)
   end
 end
 
-local function save_restart_state()
-  local file = restart_state_file()
-  local state = {
-    cwd = vim.uv.cwd() or vim.fn.getcwd(),
-    neo_tree_open = window_with_filetype "neo-tree" ~= nil,
-    aerial_open = window_with_filetype "aerial" ~= nil,
-  }
+local function real_file_from_codediff_session(diff)
+  if not diff then return nil end
 
-  vim.fn.writefile({ vim.json.encode(state) }, file)
-  vim.fn.setenv(restart_state_env, file)
-  return file
+  for _, bufnr in ipairs { diff.modified_bufnr, diff.original_bufnr, diff.result_bufnr } do
+    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+      local name = vim.api.nvim_buf_get_name(bufnr)
+      if name ~= "" and vim.bo[bufnr].buftype == "" and vim.fn.filereadable(name) == 1 then return name end
+    end
+  end
 end
 
-function M.restore_after_restart()
-  local file = pending_restart_state_file()
-  if not file then return end
+local function cleanup_active_codediff_tabs()
+  local ok_lifecycle, lifecycle = pcall(require, "codediff.ui.lifecycle")
+  local ok_session, session = pcall(require, "codediff.ui.lifecycle.session")
+  if not ok_lifecycle or not ok_session then return end
 
-  vim.fn.setenv(restart_state_env, "")
-  if vim.fn.filereadable(file) == 0 then return end
+  local active_diffs = session.get_active_diffs()
+  local diff_tabs = {}
+  for tabpage in pairs(active_diffs) do
+    if vim.api.nvim_tabpage_is_valid(tabpage) then table.insert(diff_tabs, tabpage) end
+  end
+  if #diff_tabs == 0 then return end
 
-  local raw = table.concat(vim.fn.readfile(file), "\n")
-  pcall(vim.fn.delete, file)
+  local all_tabs_are_diffs = #diff_tabs == #vim.api.nvim_list_tabpages()
+  if all_tabs_are_diffs then
+    local current_tab = vim.api.nvim_get_current_tabpage()
+    local fallback_file = real_file_from_codediff_session(active_diffs[current_tab])
+    vim.cmd "tabnew"
+    if fallback_file then pcall(vim.cmd, "edit " .. vim.fn.fnameescape(fallback_file)) end
+  end
 
-  local ok, state = pcall(vim.json.decode, raw)
-  if not ok or type(state) ~= "table" then return end
+  table.sort(
+    diff_tabs,
+    function(a, b) return vim.api.nvim_tabpage_get_number(a) > vim.api.nvim_tabpage_get_number(b) end
+  )
 
-  vim.schedule(function()
-    if state.cwd and state.cwd ~= "" then pcall(vim.cmd, "cd " .. vim.fn.fnameescape(state.cwd)) end
+  local original_tab = vim.api.nvim_get_current_tabpage()
 
-    pcall(
-      function()
-        require("resession").load(state.cwd, {
-          dir = "dirsession",
-          silence_errors = true,
-        })
-      end
-    )
+  for _, tabpage in ipairs(diff_tabs) do
+    if vim.api.nvim_tabpage_is_valid(tabpage) then
+      pcall(vim.api.nvim_set_current_tabpage, tabpage)
+      lifecycle.cleanup_for_quit(tabpage)
 
-    vim.defer_fn(function()
-      if state.neo_tree_open then safe_cmd "silent! Neotree left" end
-      if state.aerial_open then safe_cmd "silent! AerialOpen" end
-      safe_cmd "wincmd p"
-    end, 100)
-  end)
+      if #vim.api.nvim_list_tabpages() > 1 then pcall(vim.cmd, "tabclose") end
+    end
+  end
+
+  if vim.api.nvim_tabpage_is_valid(original_tab) then
+    pcall(vim.api.nvim_set_current_tabpage, original_tab)
+    return
+  end
+
+  local remaining_tabs = vim.api.nvim_list_tabpages()
+  if remaining_tabs[1] then pcall(vim.api.nvim_set_current_tabpage, remaining_tabs[1]) end
+end
+
+local function close_session_poison()
+  safe_cmd "silent! Neotree close"
+  safe_cmd "silent! Neotree close left"
+  safe_cmd "silent! Neotree close right"
+  safe_cmd "silent! AerialClose"
+
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    local ft = vim.bo[buf].filetype
+
+    if ft == "neo-tree" or ft == "aerial" then pcall(vim.api.nvim_win_close, win, true) end
+  end
+
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local ft = vim.bo[buf].filetype
+
+    if ft == "neo-tree" or ft == "aerial" then pcall(vim.api.nvim_buf_delete, buf, { force = true }) end
+  end
+end
+
+local function append_restart_commands(file, state)
+  vim.fn.writefile({
+    "",
+    '" Re-open disposable UI after real session state has been restored.',
+    "lua vim.schedule(function()"
+      .. (state.neo_tree_open and " pcall(function() vim.cmd [[silent! Neotree reveal left]] end)" or "")
+      .. (state.aerial_open and " pcall(function() vim.cmd [[silent! AerialOpen]] end)" or "")
+      .. " pcall(function() vim.cmd [[wincmd p]] end)"
+      .. " end)",
+  }, file, "a")
 end
 
 function M.restart_with_session()
   save_all_real_files()
-  local file = save_restart_state()
+  local state = {
+    neo_tree_open = window_with_filetype "neo-tree" ~= nil,
+    aerial_open = window_with_filetype "aerial" ~= nil,
+  }
 
-  local resession = require "resession"
-  local cwd = vim.uv.cwd() or vim.fn.getcwd()
+  cleanup_active_codediff_tabs()
+  close_session_poison()
 
-  local ok, err = pcall(function()
-    safe_cmd "silent! Neotree close"
-    safe_cmd "silent! AerialClose"
+  local file = restart_session_file()
+  local old_sessionoptions = vim.o.sessionoptions
 
-    resession.save(cwd, {
-      dir = "dirsession",
-      notify = false,
-      attach = false,
-    })
+  vim.opt.sessionoptions = {
+    "buffers",
+    "curdir",
+    "folds",
+    "tabpages",
+    "winsize",
+    "terminal",
+  }
 
-    vim.cmd "restart"
-  end)
+  vim.cmd("silent! mksession! " .. vim.fn.fnameescape(file))
+  vim.o.sessionoptions = old_sessionoptions
 
-  if not ok then
-    vim.fn.setenv(restart_state_env, "")
-    pcall(vim.fn.delete, file)
-    error(err)
-  end
+  append_restart_commands(file, state)
+
+  vim.cmd("restart source " .. vim.fn.fnameescape(file))
 end
 
 function M.rust_remove_unused_imports_this_file()

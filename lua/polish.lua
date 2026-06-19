@@ -47,14 +47,6 @@ vim.api.nvim_create_user_command("Res", function() require("funcs").restart_with
   desc = "Restart Neovim and restore session",
 })
 
-vim.api.nvim_create_autocmd("VimEnter", {
-  group = vim.api.nvim_create_augroup("restore_after_res_restart", { clear = true }),
-  once = true,
-  callback = function()
-    require("funcs").restore_after_restart()
-  end,
-})
-
 vim.opt.equalalways = false
 
 vim.api.nvim_create_autocmd("FileType", {
