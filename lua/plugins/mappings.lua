@@ -151,28 +151,44 @@ return {
         -- leader r (Git browsing)
         ["<leader>r"] = { desc = "Git browse" },
         ["<leader>rr"] = {
-          "<cmd>CodeDiff<cr>",
-          desc = "Staged, unstaged, and conflict changes",
+          function() require("funcs").continue_codediff() end,
+          desc = "Open or continue CodeDiff",
         },
         ["<leader>rc"] = {
-          function() require("funcs").continue_codediff() end,
-          desc = "Continue CodeDiff",
-        },
-        ["<leader>rt"] = {
           function()
             require("snacks").picker.git_log {
               confirm = function(picker, item)
                 picker:close()
                 if not item or not item.commit then return end
 
-                vim.schedule(
-                  function()
-                    vim.api.nvim_cmd({
-                      cmd = "CodeDiff",
-                      args = { item.commit },
-                    }, {})
-                  end
-                )
+                vim.schedule(function()
+                  vim.api.nvim_cmd({
+                    cmd = "CodeDiff",
+                    args = { item.commit .. "^", item.commit },
+                  }, {})
+                end)
+              end,
+            }
+          end,
+          desc = "Pick commit and show its diff",
+        },
+        ["<leader>rt"] = {
+          "<cmd>CodeDiff<cr>",
+          desc = "Staged, unstaged, and conflict changes",
+        },
+        ["<leader>rg"] = {
+          function()
+            require("snacks").picker.git_log {
+              confirm = function(picker, item)
+                picker:close()
+                if not item or not item.commit then return end
+
+                vim.schedule(function()
+                  vim.api.nvim_cmd({
+                    cmd = "CodeDiff",
+                    args = { item.commit },
+                  }, {})
+                end)
               end,
             }
           end,
@@ -191,18 +207,19 @@ return {
           function()
             vim.ui.select({
               "── Open views ───────────────────────────────────",
-              "<Leader>rr   Browse staged, unstaged, or conflict changes",
-              "<Leader>rc   Continue last CodeDiff position",
+              "<Leader>rr   Open or continue CodeDiff",
+              "<Leader>rc   Choose a commit and show only that commit diff",
               "<Leader>ro   Preview current file changes",
-              "<Leader>rt   Choose commit and compare it with now",
+              "<Leader>rt   Browse staged, unstaged, or conflict changes",
+              "<Leader>rg   Choose commit and compare it with now",
               "<Leader>rl   Browse what individual commits changed",
               "<Leader>rh   Show this help",
               "",
               "── Inside CodeDiff ──────────────────────────────",
               "<Up>/<Down>  Browse files and update the diff",
               "<Enter>      Open selected commit or file",
-              "f            Focus CodeDiff sidebar",
-              "o            Focus sidebar / hide it and return",
+              "o            Jump between sidebar and modified pane",
+              "y            Toggle CodeDiff sidebar",
               "H / h        Move left / right between windows",
               "k / K        Move down / up between windows",
               "j / J        Jump back / forward",
