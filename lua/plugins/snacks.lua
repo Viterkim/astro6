@@ -19,6 +19,23 @@ local git_picker_layout = {
   },
 }
 
+local function open_neotree_with_project_src()
+  local cwd = vim.fn.getcwd()
+  local src = cwd .. "/src"
+  local stat = (vim.uv or vim.loop).fs_stat(src)
+
+  if stat and stat.type == "directory" then
+    local manager = require "neo-tree.sources.manager"
+    local utils = require "neo-tree.utils"
+    local state = manager.get_state "filesystem"
+    cwd = utils.normalize_path(cwd)
+    src = utils.normalize_path(utils.path_join(cwd, "src"))
+    state.force_open_folders = { cwd, src }
+  end
+
+  vim.cmd "Neotree focus filesystem left"
+end
+
 return {
   "folke/snacks.nvim",
   init = function()
@@ -26,7 +43,13 @@ return {
       pattern = "SnacksDashboardOpened",
       once = true,
       callback = function()
-        if vim.fn.argc() == 0 then vim.cmd "Neotree show filesystem left" end
+        if vim.fn.argc() == 0 then
+          open_neotree_with_project_src()
+          vim.schedule(function()
+            vim.o.showtabline = 2
+            vim.cmd.redrawtabline()
+          end)
+        end
       end,
     })
   end,
