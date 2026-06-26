@@ -202,7 +202,7 @@ return {
               "<Up>/<Down>  Browse files and update the diff",
               "<Enter>      Open selected commit or file",
               "f            Focus CodeDiff sidebar",
-              "o            Hide / show CodeDiff sidebar",
+              "o            Focus sidebar / hide it and return",
               "H / h        Move left / right between windows",
               "k / K        Move down / up between windows",
               "j / J        Jump back / forward",

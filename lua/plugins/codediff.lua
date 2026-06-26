@@ -37,6 +37,8 @@ return {
     local lifecycle = require "codediff.ui.lifecycle"
     local original_next_hunk = navigation.next_hunk
     local original_prev_hunk = navigation.prev_hunk
+    local explorer_toggle_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.toggle_explorer
+    local explorer_focus_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.focus_explorer
 
     local function hunkless_file_hop(direction)
       local session = lifecycle.get_session(vim.api.nvim_get_current_tabpage())
@@ -103,6 +105,86 @@ return {
           vim.wo[win].breakindent = true
         end
       end
+    end
+
+    local function get_explorer_win(explorer_obj)
+      local split = explorer_obj and explorer_obj.split
+      local win = split and split.winid or explorer_obj and explorer_obj.winid
+      if win and vim.api.nvim_win_is_valid(win) then return win end
+    end
+
+    local function fallback_view_win(session)
+      if not session then return end
+      for _, win in ipairs { session.modified_win, session.original_win, session.result_win } do
+        if win and vim.api.nvim_win_is_valid(win) then return win end
+      end
+    end
+
+    local function focus_explorer_sidebar(tabpage)
+      local session = lifecycle.get_session(tabpage)
+      local explorer_obj = lifecycle.get_explorer(tabpage)
+      if not session or not explorer_obj then
+        vim.notify("No explorer found for this tab", vim.log.levels.WARN)
+        return
+      end
+
+      local current_win = vim.api.nvim_get_current_win()
+      local explorer_win = get_explorer_win(explorer_obj)
+
+      if current_win ~= explorer_win then session.viter_explorer_return_win = current_win end
+
+      if explorer_obj.is_hidden or not explorer_win then require("codediff.ui.explorer").toggle_visibility(explorer_obj) end
+
+      vim.schedule(function()
+        local target = get_explorer_win(explorer_obj)
+        if target then vim.api.nvim_set_current_win(target) end
+      end)
+    end
+
+    local function toggle_explorer_sidebar(tabpage)
+      local session = lifecycle.get_session(tabpage)
+      local explorer_obj = lifecycle.get_explorer(tabpage)
+      if not session or not explorer_obj then
+        vim.notify("No explorer found for this tab", vim.log.levels.WARN)
+        return
+      end
+
+      local current_win = vim.api.nvim_get_current_win()
+      local explorer_win = get_explorer_win(explorer_obj)
+
+      if explorer_win and current_win == explorer_win and not explorer_obj.is_hidden then
+        require("codediff.ui.explorer").toggle_visibility(explorer_obj)
+
+        vim.schedule(function()
+          local target = session.viter_explorer_return_win
+          if not (target and vim.api.nvim_win_is_valid(target)) or target == explorer_win then
+            target = fallback_view_win(session)
+          end
+          if target then vim.api.nvim_set_current_win(target) end
+          session.viter_explorer_return_win = nil
+        end)
+
+        return
+      end
+
+      focus_explorer_sidebar(tabpage)
+    end
+
+    local original_set_tab_keymap = lifecycle._viter_original_set_tab_keymap or lifecycle.set_tab_keymap
+    if not lifecycle._viter_explorer_sidebar_keys_wrapped then
+      lifecycle._viter_original_set_tab_keymap = original_set_tab_keymap
+      lifecycle.set_tab_keymap = function(tabpage, mode, lhs, rhs, map_opts)
+        if mode == "n" and lhs == explorer_toggle_key and lifecycle.get_mode(tabpage) == "explorer" then
+          rhs = function() toggle_explorer_sidebar(tabpage) end
+          map_opts = vim.tbl_extend("force", map_opts or {}, { desc = "Toggle explorer and focus" })
+        elseif mode == "n" and lhs == explorer_focus_key and lifecycle.get_mode(tabpage) == "explorer" then
+          rhs = function() focus_explorer_sidebar(tabpage) end
+          map_opts = vim.tbl_extend("force", map_opts or {}, { desc = "Focus explorer panel" })
+        end
+
+        return original_set_tab_keymap(tabpage, mode, lhs, rhs, map_opts)
+      end
+      lifecycle._viter_explorer_sidebar_keys_wrapped = true
     end
 
     vim.api.nvim_create_autocmd("User", {
