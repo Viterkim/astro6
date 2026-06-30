@@ -70,6 +70,7 @@ return {
     local open_in_prev_tab_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.open_in_prev_tab
     local focus_explorer_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.focus_explorer
     local blocked_sidebar_keys = { "<leader>e", "<leader>o" }
+    local guarded_sidebar_buffers = {}
     local original_next_hunk = navigation.next_hunk
     local original_prev_hunk = navigation.prev_hunk
 
@@ -269,9 +270,10 @@ return {
 
       if opts.keymaps.view.close_on_open_in_prev_tab and vim.api.nvim_tabpage_is_valid(current_tab) then
         lifecycle.cleanup(current_tab)
-        vim.api.nvim_set_current_tabpage(current_tab)
-        vim.cmd "tabclose"
+        vim.cmd(vim.api.nvim_tabpage_get_number(current_tab) .. "tabclose")
       end
+
+      vim.cmd "normal! zz"
     end
 
     local function remap_open_in_prev_tab(tabpage)
@@ -323,40 +325,84 @@ return {
       end
     end
 
-    local function set_preview_sidebar_guards(tabpage)
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tabpage or vim.api.nvim_get_current_tabpage())
-      if not session then return end
+    ---@param session ViterCodeDiffSession?
+    ---@return integer[]
+    local function collect_session_buffers(session)
+      if not session then return {} end
 
+      local buffers = {}
+      local seen = {}
       local explorer = session.explorer
-      for _, bufnr in ipairs { session.original_bufnr, session.modified_bufnr, session.result_bufnr, explorer and explorer.bufnr or nil } do
-        if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-          for _, lhs in ipairs(blocked_sidebar_keys) do
-            vim.keymap.set("n", lhs, "<Nop>", {
-              buffer = bufnr,
-              noremap = true,
-              silent = true,
-              nowait = true,
-              desc = "Disabled in CodeDiff",
-            })
-          end
+
+      for _, bufnr in ipairs {
+        session.original_bufnr,
+        session.modified_bufnr,
+        session.result_bufnr,
+        explorer and explorer.bufnr or nil,
+      } do
+        if bufnr and vim.api.nvim_buf_is_valid(bufnr) and not seen[bufnr] then
+          seen[bufnr] = true
+          table.insert(buffers, bufnr)
         end
       end
+
+      return buffers
     end
 
-    local function clear_preview_sidebar_guards(tabpage)
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tabpage or vim.api.nvim_get_current_tabpage())
-      if not session then return end
-
-      local explorer = session.explorer
-      for _, bufnr in ipairs { session.original_bufnr, session.modified_bufnr, session.result_bufnr, explorer and explorer.bufnr or nil } do
-        if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    ---@param buffers integer[]
+    local function clear_sidebar_guards_for_buffers(buffers)
+      for _, bufnr in ipairs(buffers) do
+        if vim.api.nvim_buf_is_valid(bufnr) then
           for _, lhs in ipairs(blocked_sidebar_keys) do
             pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })
           end
         end
       end
+    end
+
+    local function set_preview_sidebar_guards(tabpage)
+      ---@type ViterCodeDiffSession?
+      local session = lifecycle.get_session(tabpage or vim.api.nvim_get_current_tabpage())
+      if not session then return end
+
+      local tab = tabpage or vim.api.nvim_get_current_tabpage()
+      local guarded = guarded_sidebar_buffers[tab] or {}
+      local desired = {}
+
+      for _, bufnr in ipairs(collect_session_buffers(session)) do
+        desired[bufnr] = true
+        for _, lhs in ipairs(blocked_sidebar_keys) do
+          vim.keymap.set("n", lhs, "<Nop>", {
+            buffer = bufnr,
+            noremap = true,
+            silent = true,
+            nowait = true,
+            desc = "Disabled in CodeDiff",
+          })
+        end
+      end
+
+      local stale = {}
+      for bufnr in pairs(guarded) do
+        if not desired[bufnr] then table.insert(stale, bufnr) end
+      end
+      clear_sidebar_guards_for_buffers(stale)
+
+      guarded_sidebar_buffers[tab] = desired
+    end
+
+    local function clear_preview_sidebar_guards(tabpage)
+      local tab = tabpage or vim.api.nvim_get_current_tabpage()
+      local tracked = guarded_sidebar_buffers[tab]
+      if not tracked then return end
+
+      local buffers = {}
+      for bufnr in pairs(tracked) do
+        table.insert(buffers, bufnr)
+      end
+
+      clear_sidebar_guards_for_buffers(buffers)
+      guarded_sidebar_buffers[tab] = nil
     end
 
     vim.api.nvim_create_autocmd("User", {
