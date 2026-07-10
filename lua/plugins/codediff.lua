@@ -75,11 +75,18 @@ return {
     local original_prev_hunk = navigation.prev_hunk
 
     local function hunkless_file_hop(direction)
+      local tabpage = vim.api.nvim_get_current_tabpage()
       ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(vim.api.nvim_get_current_tabpage())
+      local session = lifecycle.get_session(tabpage)
       local changes = session and session.stored_diff_result and session.stored_diff_result.changes
-      if changes and #changes > 0 then return false end
+
+      -- `nil` means CodeDiff is still loading the next diff. Only single-pane
+      -- entries (untracked/added/deleted files) have a fully loaded, empty
+      -- change list. Treating the loading state as hunkless can start another
+      -- file switch before the first one finishes.
+      if type(changes) ~= "table" or #changes ~= 0 then return false end
       if not opts.diff.cycle_hunks_across_files then return false end
+      if not lifecycle.get_explorer(tabpage) then return false end
 
       if session then session.pending_cursor_landing = direction == "next" and "first" or "last" end
 
@@ -90,9 +97,11 @@ return {
       end
     end
 
-    function navigation.next_hunk() return hunkless_file_hop "next" or original_next_hunk() end
+    -- Let CodeDiff's native cross-file hunk navigation handle real diffs.
+    -- The fallback only skips its single-pane, zero-hunk file entries.
+    function navigation.next_hunk() return original_next_hunk() or hunkless_file_hop "next" end
 
-    function navigation.prev_hunk() return hunkless_file_hop "prev" or original_prev_hunk() end
+    function navigation.prev_hunk() return original_prev_hunk() or hunkless_file_hop "prev" end
 
     ---@param session ViterCodeDiffSession?
     local function continue_target_matches(session)
