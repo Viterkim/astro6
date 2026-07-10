@@ -277,7 +277,7 @@ return {
 
         -- leader other
         ["<leader>ti"] = { function() require("neotest").output.open { enter = true } end, desc = "Neotest Output" },
-        ["<leader>q"] = { "<cmd>q<CR>", desc = "Quit window" },
+        ["<leader>q"] = { function() require("funcs").quit_window_or_nvim() end, desc = "Quit window / Neovim" },
         ["<leader>0"] = {
           function() require("funcs").sudoku_quit() end,
           desc = "Nuke all windows",

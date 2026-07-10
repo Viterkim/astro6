@@ -21,6 +21,19 @@ function M.exit_visual()
   vim.api.nvim_feedkeys(esc, "nx", false)
 end
 
+function M.quit_window_or_nvim()
+  local sidebar_filetypes = {
+    ["neo-tree"] = true,
+    aerial = true,
+  }
+
+  if sidebar_filetypes[vim.bo.filetype] then
+    vim.cmd "qa"
+  else
+    vim.cmd "q"
+  end
+end
+
 local function get_visual_bounds()
   local mode = vim.fn.mode()
   local start_pos, end_pos
