@@ -9,6 +9,9 @@ return {
         "stylua",
         "tree-sitter-cli",
 
+        -- F#
+        "fsautocomplete",
+
         -- Rust
         "rust-analyzer",
         "codelldb",

@@ -25,6 +25,7 @@ return {
     formatters_by_ft = {
       rust = { "rustfmt" },
       lua = { "stylua" },
+      fsharp = { "fantomas" },
 
       javascript = { "eslint_d" },
       javascriptreact = { "eslint_d" },
@@ -33,4 +34,3 @@ return {
     },
   },
 }
-
