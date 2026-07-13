@@ -1,23 +1,36 @@
 local image_globs = require("utils.image_globs").patterns()
+local buffer_utils = require "astrocore.buffer"
+
+local function show_indent_guides(bufnr, winid)
+  local codediff_window = winid and vim.api.nvim_win_is_valid(winid) and vim.w[winid].codediff_restore == 1
+
+  return (buffer_utils.is_valid(bufnr) or codediff_window)
+    and not buffer_utils.is_large(bufnr)
+    and vim.g.snacks_indent ~= false
+    and vim.b[bufnr].snacks_indent ~= false
+end
+
 local picker_excludes = vim.list_extend(vim.deepcopy(image_globs), {
   ".git",
   "node_modules",
   "garage",
 })
 
-local git_picker_layout = {
-  layout = {
-    box = "vertical",
-    border = "rounded",
-    title = "{source}",
-    title_pos = "center",
-    width = 0.98,
-    height = 0.95,
-    { win = "preview", title = "{preview}", border = "bottom" },
-    { win = "input", height = 1, border = "bottom", title = "{title} {live} {flags}" },
-    { win = "list", height = 5, border = "none" },
-  },
-}
+local function git_picker_layout(list_height)
+  return {
+    layout = {
+      box = "vertical",
+      border = "rounded",
+      title = "{source}",
+      title_pos = "center",
+      width = 0.98,
+      height = 0.95,
+      { win = "preview", title = "{preview}", border = "bottom" },
+      { win = "input", height = 1, border = "bottom", title = "{title} {live} {flags}" },
+      { win = "list", height = list_height, border = "none" },
+    },
+  }
+end
 
 local function open_neotree_with_project_src()
   local cwd = vim.fn.getcwd()
@@ -54,6 +67,12 @@ return {
     })
   end,
   opts = {
+    indent = {
+      -- CodeDiff intentionally uses unlisted real-file buffers. AstroNvim's
+      -- default filter excludes those, leaving guides on only the virtual pane.
+      filter = show_indent_guides,
+    },
+
     image = {
       enabled = false,
       formats = {},
@@ -90,6 +109,10 @@ return {
       -- LSP auto fixes should not show up with the snacks picker by default
       ui_select = false,
 
+      layouts = {
+        git_compare = git_picker_layout(8),
+      },
+
       layout = {
         width = 0.95,
         height = 0.95,
@@ -118,9 +141,9 @@ return {
           exclude = picker_excludes,
         },
 
-        git_status = { layout = vim.deepcopy(git_picker_layout) },
-        git_log = { layout = vim.deepcopy(git_picker_layout) },
-        git_branches = { layout = vim.deepcopy(git_picker_layout) },
+        git_status = { layout = git_picker_layout(5) },
+        git_log = { layout = git_picker_layout(5) },
+        git_branches = { layout = git_picker_layout(5) },
       },
 
       win = {

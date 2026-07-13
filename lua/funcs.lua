@@ -430,7 +430,7 @@ local function cleanup_active_codediff_tabs()
     local current_tab = vim.api.nvim_get_current_tabpage()
     local fallback_file = real_file_from_codediff_session(active_diffs[current_tab])
     vim.cmd "tabnew"
-    if fallback_file then pcall(vim.cmd, "edit " .. vim.fn.fnameescape(fallback_file)) end
+    if fallback_file then pcall(function() vim.cmd("edit " .. vim.fn.fnameescape(fallback_file)) end) end
   end
 
   table.sort(
@@ -445,7 +445,7 @@ local function cleanup_active_codediff_tabs()
       pcall(vim.api.nvim_set_current_tabpage, tabpage)
       lifecycle.cleanup_for_quit(tabpage)
 
-      if #vim.api.nvim_list_tabpages() > 1 then pcall(vim.cmd, "tabclose") end
+      if #vim.api.nvim_list_tabpages() > 1 then pcall(function() vim.cmd "tabclose" end) end
     end
   end
 
@@ -747,14 +747,52 @@ function M.open_current_file_codediff()
   end)
 end
 
+local function store_codediff_continue_position(path)
+  if type(path) ~= "string" or path == "" then return end
+
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  vim.g.viter_codediff_continue_file = path
+  vim.g.viter_codediff_continue_line = cursor[1]
+  vim.g.viter_codediff_continue_col = cursor[2]
+end
+
+function M.open_codediff(args)
+  args = args or {}
+  vim.g.viter_codediff_last_args = vim.deepcopy(args)
+  vim.api.nvim_cmd({ cmd = "CodeDiff", args = args }, {})
+end
+
+local function active_codediff_tab()
+  local ok_session, session_state = pcall(require, "codediff.ui.lifecycle.session")
+  if not ok_session then return nil end
+
+  local tabpage = vim.g.viter_codediff_last_tab
+  if type(tabpage) ~= "number" or not vim.api.nvim_tabpage_is_valid(tabpage) then return nil end
+  if not session_state.get_active_diffs()[tabpage] then return nil end
+
+  return tabpage
+end
+
+local function reopen_last_codediff()
+  local args = vim.g.viter_codediff_last_args
+  if type(args) ~= "table" then return false end
+
+  M.open_codediff(args)
+  return true
+end
+
 function M.continue_codediff()
+  local tabpage = active_codediff_tab()
+  if tabpage then
+    if vim.api.nvim_get_current_tabpage() ~= tabpage then vim.api.nvim_set_current_tabpage(tabpage) end
+    return
+  end
+
   local current_file = vim.api.nvim_buf_get_name(0)
   if current_file ~= "" then
-    local cursor = vim.api.nvim_win_get_cursor(0)
-    vim.g.viter_codediff_continue_file = current_file
-    vim.g.viter_codediff_continue_line = cursor[1]
-    vim.g.viter_codediff_continue_col = cursor[2]
-    vim.cmd "CodeDiff"
+    store_codediff_continue_position(current_file)
+    if reopen_last_codediff() then return end
+    M.open_codediff()
     return
   end
 
@@ -773,7 +811,9 @@ function M.continue_codediff()
   end
 
   vim.cmd("edit " .. vim.fn.fnameescape(path))
-  vim.cmd "CodeDiff"
+  store_codediff_continue_position(path)
+  if reopen_last_codediff() then return end
+  M.open_codediff()
 end
 
 return M

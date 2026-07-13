@@ -4,7 +4,7 @@ return {
   opts = {
     diff = {
       cycle_hunks_across_files = true,
-      cycle_next_hunk = false,
+      cycle_next_hunk = true,
       cycle_next_file = true,
       jump_to_first_change = true,
     },
@@ -74,6 +74,11 @@ return {
     local original_next_hunk = navigation.next_hunk
     local original_prev_hunk = navigation.prev_hunk
 
+    local function remember_last_tab(tabpage)
+      local tab = tabpage or vim.api.nvim_get_current_tabpage()
+      if tab and vim.api.nvim_tabpage_is_valid(tab) then vim.g.viter_codediff_last_tab = tab end
+    end
+
     local function hunkless_file_hop(direction)
       local tabpage = vim.api.nvim_get_current_tabpage()
       ---@type ViterCodeDiffSession?
@@ -109,7 +114,7 @@ return {
       if type(target_file) ~= "string" or target_file == "" then return true end
       if not session or type(session.modified_path) ~= "string" or session.modified_path == "" then return false end
 
-      local session_file = session.modified_path
+      local session_file = session.modified_path --[[@as string]]
       if session.git_root and session_file:sub(1, 1) ~= "/" then
         session_file = session.git_root .. "/" .. session_file
       end
@@ -269,7 +274,7 @@ return {
 
       if vim.api.nvim_get_current_tabpage() ~= target_tab then vim.api.nvim_set_current_tabpage(target_tab) end
 
-      local ok, err = pcall(vim.cmd, "hide edit " .. vim.fn.fnameescape(target_file))
+      local ok, err = pcall(function() vim.cmd("hide edit " .. vim.fn.fnameescape(target_file)) end)
       if not ok then
         vim.notify("Failed to open buffer in previous tab: " .. err, vim.log.levels.ERROR)
         return
@@ -385,7 +390,6 @@ return {
             buffer = bufnr,
             noremap = true,
             silent = true,
-            nowait = true,
             desc = "Disabled in CodeDiff",
           })
         end
@@ -420,6 +424,7 @@ return {
       callback = function(args)
         local tabpage = args.data and args.data.tabpage
         vim.schedule(function()
+          remember_last_tab(tabpage)
           wrap_diff_windows(tabpage)
           consume_continue_landing(tabpage)
           remap_open_in_prev_tab(tabpage)
@@ -438,6 +443,7 @@ return {
 
         ---@type ViterCodeDiffSession?
         local session = lifecycle.get_session(args.data.tabpage or vim.api.nvim_get_current_tabpage())
+        remember_last_tab(args.data.tabpage)
         vim.g.viter_codediff_last_file = args.data.path
         vim.g.viter_codediff_last_root = session and session.git_root or nil
       end,

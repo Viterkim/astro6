@@ -162,10 +162,7 @@ return {
                 if not item or not item.commit then return end
 
                 vim.schedule(function()
-                  vim.api.nvim_cmd({
-                    cmd = "CodeDiff",
-                    args = { item.commit .. "^", item.commit },
-                  }, {})
+                  require("funcs").open_codediff { item.commit .. "^", item.commit }
                 end)
               end,
             }
@@ -173,21 +170,19 @@ return {
           desc = "Pick commit and show its diff",
         },
         ["<leader>rt"] = {
-          "<cmd>CodeDiff<cr>",
+          function() require("funcs").open_codediff() end,
           desc = "Staged, unstaged, and conflict changes",
         },
         ["<leader>rg"] = {
           function()
             require("snacks").picker.git_log {
+              layout = "git_compare",
               confirm = function(picker, item)
                 picker:close()
                 if not item or not item.commit then return end
 
                 vim.schedule(function()
-                  vim.api.nvim_cmd({
-                    cmd = "CodeDiff",
-                    args = { item.commit },
-                  }, {})
+                  require("funcs").open_codediff { item.commit }
                 end)
               end,
             }
@@ -195,7 +190,7 @@ return {
           desc = "Pick commit and compare with now",
         },
         ["<leader>rl"] = {
-          "<cmd>CodeDiff history<cr>",
+          function() require("funcs").open_codediff { "history" } end,
           desc = "Browse individual commits",
         },
         ["<leader>ro"] = {
