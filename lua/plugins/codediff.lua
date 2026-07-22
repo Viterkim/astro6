@@ -50,6 +50,10 @@ return {
     ---@field bufnr? integer
     ---@field is_hidden? boolean
 
+    ---@class ViterCodeDiffPath
+    ---@field absolute string
+    ---@field relative string
+
     ---@class ViterCodeDiffSession
     ---@field stored_diff_result? ViterCodeDiffDiffResult
     ---@field pending_cursor_landing? "first"|"last"
@@ -59,7 +63,7 @@ return {
     ---@field original_bufnr? integer
     ---@field modified_bufnr? integer
     ---@field result_bufnr? integer
-    ---@field modified_path? string
+    ---@field modified? ViterCodeDiffPath
     ---@field git_root? string
     ---@field explorer? ViterCodeDiffExplorer
 
@@ -67,7 +71,6 @@ return {
 
     local navigation = require "codediff.ui.view.navigation"
     local lifecycle = require "codediff.ui.lifecycle"
-    local open_in_prev_tab_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.open_in_prev_tab
     local focus_explorer_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.focus_explorer
     local blocked_sidebar_keys = { "<leader>e", "<leader>o" }
     local guarded_sidebar_buffers = {}
@@ -112,12 +115,8 @@ return {
     local function continue_target_matches(session)
       local target_file = vim.g.viter_codediff_continue_file
       if type(target_file) ~= "string" or target_file == "" then return true end
-      if not session or type(session.modified_path) ~= "string" or session.modified_path == "" then return false end
-
-      local session_file = session.modified_path --[[@as string]]
-      if session.git_root and session_file:sub(1, 1) ~= "/" then
-        session_file = session.git_root .. "/" .. session_file
-      end
+      local session_file = session and session.modified and session.modified.absolute
+      if type(session_file) ~= "string" or session_file == "" then return false end
 
       return vim.fn.fnamemodify(session_file, ":p") == vim.fn.fnamemodify(target_file, ":p")
     end
@@ -220,93 +219,6 @@ return {
         local target = get_explorer_win(explorer_obj)
         if target then vim.api.nvim_set_current_win(target) end
       end)
-    end
-
-    local function open_real_buffer_in_prev_tab(tabpage)
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tabpage)
-      if not session then return end
-
-      local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
-      local current_buf = vim.api.nvim_get_current_buf()
-      local side = current_buf == original_bufnr and "original" or current_buf == modified_bufnr and "modified" or nil
-      if not side then return end
-
-      local is_virtual = side == "original" and lifecycle.is_original_virtual(tabpage)
-        or side == "modified" and lifecycle.is_modified_virtual(tabpage)
-
-      local target_file = vim.api.nvim_buf_get_name(current_buf)
-      if is_virtual then
-        local original_path, modified_path = lifecycle.get_paths(tabpage)
-        local rel_path = side == "original" and original_path or modified_path
-        if not rel_path or rel_path == "" then
-          vim.notify("Buffer has no associated file path", vim.log.levels.WARN)
-          return
-        end
-        target_file = session.git_root .. "/" .. rel_path
-      end
-
-      if target_file == "" then
-        vim.notify("Buffer has no name; cannot open in previous tab", vim.log.levels.WARN)
-        return
-      end
-
-      local cursor = vim.api.nvim_win_get_cursor(0)
-      local current_tab = vim.api.nvim_get_current_tabpage()
-      local tabs = vim.api.nvim_list_tabpages()
-      local current_index
-
-      for i, tab in ipairs(tabs) do
-        if tab == current_tab then
-          current_index = i
-          break
-        end
-      end
-
-      local target_tab
-      if current_index and current_index > 1 then
-        target_tab = tabs[current_index - 1]
-      else
-        vim.cmd "tabnew"
-        target_tab = vim.api.nvim_get_current_tabpage()
-        vim.cmd "tabmove 0"
-      end
-
-      if vim.api.nvim_get_current_tabpage() ~= target_tab then vim.api.nvim_set_current_tabpage(target_tab) end
-
-      local ok, err = pcall(function() vim.cmd("hide edit " .. vim.fn.fnameescape(target_file)) end)
-      if not ok then
-        vim.notify("Failed to open buffer in previous tab: " .. err, vim.log.levels.ERROR)
-        return
-      end
-
-      pcall(vim.api.nvim_win_set_cursor, 0, cursor)
-
-      if opts.keymaps.view.close_on_open_in_prev_tab and vim.api.nvim_tabpage_is_valid(current_tab) then
-        lifecycle.cleanup(current_tab)
-        vim.cmd(vim.api.nvim_tabpage_get_number(current_tab) .. "tabclose")
-      end
-
-      vim.cmd "normal! zz"
-    end
-
-    local function remap_open_in_prev_tab(tabpage)
-      if not open_in_prev_tab_key then return end
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tabpage or vim.api.nvim_get_current_tabpage())
-      if not session then return end
-
-      for _, bufnr in ipairs { session.original_bufnr, session.modified_bufnr } do
-        if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-          vim.keymap.set("n", open_in_prev_tab_key, function() open_real_buffer_in_prev_tab(tabpage) end, {
-            buffer = bufnr,
-            noremap = true,
-            silent = true,
-            nowait = true,
-            desc = "Open buffer in previous tab",
-          })
-        end
-      end
     end
 
     local function remap_focus_explorer(tabpage)
@@ -427,7 +339,6 @@ return {
           remember_last_tab(tabpage)
           wrap_diff_windows(tabpage)
           consume_continue_landing(tabpage)
-          remap_open_in_prev_tab(tabpage)
           remap_focus_explorer(tabpage)
           set_preview_sidebar_guards(tabpage)
           vim.defer_fn(function() wrap_diff_windows(tabpage) end, 80)

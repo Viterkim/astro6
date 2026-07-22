@@ -11,6 +11,15 @@ return {
   cmd = { "ConformInfo" },
 
   opts = {
+    formatters = {
+      -- Use the formatter pinned in each F# repository's dotnet tool manifest.
+      fantomas = {
+        command = "dotnet",
+        args = { "fantomas", "$FILENAME" },
+        stdin = false,
+      },
+    },
+
     format_on_save = function(bufnr)
       local filetype = vim.bo[bufnr].filetype
 

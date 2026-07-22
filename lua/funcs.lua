@@ -673,7 +673,10 @@ function M.open_current_file_codediff()
   end
 
   local git = require "codediff.core.git"
+  local path = require "codediff.core.path"
   local view = require "codediff.ui.view"
+  local filetype = vim.bo[0].filetype
+  if not filetype or filetype == "" then filetype = vim.filetype.match { filename = current_file } or "" end
 
   git.get_git_root(current_file, function(err_root, git_root)
     if err_root then
@@ -681,10 +684,8 @@ function M.open_current_file_codediff()
       return
     end
 
-    local relative_path = git.get_relative_path(current_file, git_root)
-    local abs_path = git_root .. "/" .. relative_path
-    local filetype = vim.bo[0].filetype
-    if not filetype or filetype == "" then filetype = vim.filetype.match { filename = current_file } or "" end
+    local current_ref = path.make_ref(current_file, git_root)
+    local relative_path = current_ref.relative
 
     git.get_status(git_root, function(err_status, status_result)
       if err_status then
@@ -723,8 +724,8 @@ function M.open_current_file_codediff()
           session_config = {
             mode = "standalone",
             git_root = git_root,
-            original_path = relative_path,
-            modified_path = abs_path,
+            original = path.make_ref(relative_path, git_root),
+            modified = current_ref,
             original_revision = staged and ":0" or head,
             modified_revision = nil,
             layout = "side-by-side",
@@ -733,8 +734,8 @@ function M.open_current_file_codediff()
           session_config = {
             mode = "standalone",
             git_root = git_root,
-            original_path = staged.old_path or relative_path,
-            modified_path = relative_path,
+            original = path.make_ref(staged.old_path or relative_path, git_root),
+            modified = current_ref,
             original_revision = head,
             modified_revision = ":0",
             layout = "side-by-side",

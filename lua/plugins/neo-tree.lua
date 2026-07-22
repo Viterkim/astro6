@@ -24,7 +24,7 @@ return {
       },
 
       hijack_netrw_behavior = "open_current",
-      use_libuv_file_watcher = false,
+      use_libuv_file_watcher = true,
       use_popups_for_input = true,
     },
 
@@ -34,6 +34,11 @@ return {
       mappings = {
         -- Do not let Neo-tree take over the global leader key.
         ["<space>"] = false,
+
+        ["n"] = function() vim.cmd "normal! k" end,
+        ["e"] = function() vim.cmd "normal! j" end,
+        ["i"] = "open",
+        ["ø"] = "show_file_details",
 
         ["H"] = function() require("smart-splits").move_cursor_left() end,
         ["h"] = function() require("smart-splits").move_cursor_right() end,

@@ -7,8 +7,13 @@ return {
 
       opts.config = opts.config or {}
       opts.config.fsautocomplete = vim.tbl_deep_extend("force", opts.config.fsautocomplete or {}, {
-        cmd = { "fsautocomplete", "--background-service-enabled" },
+        cmd = { "fsautocomplete", "--adaptive-lsp-server-enabled" },
         init_options = { AutomaticWorkspaceInit = true },
+        settings = {
+          FSharp = {
+            UnusedDeclarationsAnalyzerExclusions = { ".*Win32\\.fs$" },
+          },
+        },
       })
 
       return opts
