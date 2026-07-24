@@ -31,16 +31,6 @@ return {
     },
   },
   config = function(_, opts)
-    ---@class ViterCodeDiffChangeSide
-    ---@field start_line integer
-
-    ---@class ViterCodeDiffChange
-    ---@field original ViterCodeDiffChangeSide
-    ---@field modified ViterCodeDiffChangeSide
-
-    ---@class ViterCodeDiffDiffResult
-    ---@field changes ViterCodeDiffChange[]?
-
     ---@class ViterCodeDiffExplorerSplit
     ---@field winid? integer
 
@@ -55,8 +45,7 @@ return {
     ---@field relative string
 
     ---@class ViterCodeDiffSession
-    ---@field stored_diff_result? ViterCodeDiffDiffResult
-    ---@field pending_cursor_landing? "first"|"last"
+    ---@field stored_diff_result? unknown
     ---@field modified_win? integer
     ---@field original_win? integer
     ---@field result_win? integer
@@ -69,47 +58,15 @@ return {
 
     require("codediff").setup(opts)
 
-    local navigation = require "codediff.ui.view.navigation"
     local lifecycle = require "codediff.ui.lifecycle"
     local focus_explorer_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.focus_explorer
     local blocked_sidebar_keys = { "<leader>e", "<leader>o" }
     local guarded_sidebar_buffers = {}
-    local original_next_hunk = navigation.next_hunk
-    local original_prev_hunk = navigation.prev_hunk
 
     local function remember_last_tab(tabpage)
       local tab = tabpage or vim.api.nvim_get_current_tabpage()
       if tab and vim.api.nvim_tabpage_is_valid(tab) then vim.g.viter_codediff_last_tab = tab end
     end
-
-    local function hunkless_file_hop(direction)
-      local tabpage = vim.api.nvim_get_current_tabpage()
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tabpage)
-      local changes = session and session.stored_diff_result and session.stored_diff_result.changes
-
-      -- `nil` means CodeDiff is still loading the next diff. Only single-pane
-      -- entries (untracked/added/deleted files) have a fully loaded, empty
-      -- change list. Treating the loading state as hunkless can start another
-      -- file switch before the first one finishes.
-      if type(changes) ~= "table" or #changes ~= 0 then return false end
-      if not opts.diff.cycle_hunks_across_files then return false end
-      if not lifecycle.get_explorer(tabpage) then return false end
-
-      if session then session.pending_cursor_landing = direction == "next" and "first" or "last" end
-
-      if direction == "next" then
-        return navigation.next_file()
-      else
-        return navigation.prev_file()
-      end
-    end
-
-    -- Let CodeDiff's native cross-file hunk navigation handle real diffs.
-    -- The fallback only skips its single-pane, zero-hunk file entries.
-    function navigation.next_hunk() return original_next_hunk() or hunkless_file_hop "next" end
-
-    function navigation.prev_hunk() return original_prev_hunk() or hunkless_file_hop "prev" end
 
     ---@param session ViterCodeDiffSession?
     local function continue_target_matches(session)
@@ -203,17 +160,15 @@ return {
 
       if in_explorer then
         local target = session.modified_win
-        if not (target and vim.api.nvim_win_is_valid(target)) then
-          target = session.original_win
-        end
-        if not (target and vim.api.nvim_win_is_valid(target)) then
-          target = session.result_win
-        end
+        if not (target and vim.api.nvim_win_is_valid(target)) then target = session.original_win end
+        if not (target and vim.api.nvim_win_is_valid(target)) then target = session.result_win end
         if target and vim.api.nvim_win_is_valid(target) then vim.api.nvim_set_current_win(target) end
         return
       end
 
-      if explorer_obj.is_hidden or not explorer_win then require("codediff.ui.explorer").toggle_visibility(explorer_obj) end
+      if explorer_obj.is_hidden or not explorer_win then
+        require("codediff.ui.explorer").toggle_visibility(explorer_obj)
+      end
 
       vim.schedule(function()
         local target = get_explorer_win(explorer_obj)
@@ -363,9 +318,7 @@ return {
     vim.api.nvim_create_autocmd("User", {
       group = vim.api.nvim_create_augroup("viter_codediff_sidebar_guards", { clear = true }),
       pattern = "CodeDiffClose",
-      callback = function(args)
-        clear_preview_sidebar_guards(args.data and args.data.tabpage)
-      end,
+      callback = function(args) clear_preview_sidebar_guards(args.data and args.data.tabpage) end,
     })
   end,
 }

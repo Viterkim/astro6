@@ -416,14 +416,14 @@ end
 local function cleanup_active_codediff_tabs()
   local ok_lifecycle, lifecycle = pcall(require, "codediff.ui.lifecycle")
   local ok_session, session = pcall(require, "codediff.ui.lifecycle.session")
-  if not ok_lifecycle or not ok_session then return end
+  if not ok_lifecycle or not ok_session then return true end
 
   local active_diffs = session.get_active_diffs()
   local diff_tabs = {}
   for tabpage in pairs(active_diffs) do
     if vim.api.nvim_tabpage_is_valid(tabpage) then table.insert(diff_tabs, tabpage) end
   end
-  if #diff_tabs == 0 then return end
+  if #diff_tabs == 0 then return true end
 
   local all_tabs_are_diffs = #diff_tabs == #vim.api.nvim_list_tabpages()
   if all_tabs_are_diffs then
@@ -438,24 +438,11 @@ local function cleanup_active_codediff_tabs()
     function(a, b) return vim.api.nvim_tabpage_get_number(a) > vim.api.nvim_tabpage_get_number(b) end
   )
 
-  local original_tab = vim.api.nvim_get_current_tabpage()
-
   for _, tabpage in ipairs(diff_tabs) do
-    if vim.api.nvim_tabpage_is_valid(tabpage) then
-      pcall(vim.api.nvim_set_current_tabpage, tabpage)
-      lifecycle.cleanup_for_quit(tabpage)
-
-      if #vim.api.nvim_list_tabpages() > 1 then pcall(function() vim.cmd "tabclose" end) end
-    end
+    if vim.api.nvim_tabpage_is_valid(tabpage) and not lifecycle.close(tabpage) then return false end
   end
 
-  if vim.api.nvim_tabpage_is_valid(original_tab) then
-    pcall(vim.api.nvim_set_current_tabpage, original_tab)
-    return
-  end
-
-  local remaining_tabs = vim.api.nvim_list_tabpages()
-  if remaining_tabs[1] then pcall(vim.api.nvim_set_current_tabpage, remaining_tabs[1]) end
+  return true
 end
 
 local function close_session_poison()
@@ -497,7 +484,10 @@ function M.restart_with_session()
     aerial_open = window_with_filetype "aerial" ~= nil,
   }
 
-  cleanup_active_codediff_tabs()
+  if not cleanup_active_codediff_tabs() then
+    vim.notify("Restart cancelled: CodeDiff has unsaved conflict changes", vim.log.levels.WARN)
+    return
+  end
   close_session_poison()
 
   local file = restart_session_file()

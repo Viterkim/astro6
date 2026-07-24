@@ -14,8 +14,9 @@ return {
       format_on_save = {
         enabled = true,
 
-        -- Conform + eslint_d owns these filetypes.
+        -- Conform owns these filetypes (using rustfmt or eslint_d).
         ignore_filetypes = {
+          "rust",
           "javascript",
           "javascriptreact",
           "typescript",
@@ -45,4 +46,3 @@ return {
     },
   },
 }
-
