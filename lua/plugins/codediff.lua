@@ -45,7 +45,7 @@ return {
     ---@field relative string
 
     ---@class ViterCodeDiffSession
-    ---@field stored_diff_result? unknown
+    ---@field stored_diff_result? { changes?: ViterCodeDiffChange[] }
     ---@field modified_win? integer
     ---@field original_win? integer
     ---@field result_win? integer
@@ -55,6 +55,12 @@ return {
     ---@field modified? ViterCodeDiffPath
     ---@field git_root? string
     ---@field explorer? ViterCodeDiffExplorer
+    ---@field layout? "inline"|"side-by-side"
+    ---@field pending_cursor_landing? "first"|"last"
+
+    ---@class ViterCodeDiffChange
+    ---@field original { start_line: integer }
+    ---@field modified { start_line: integer }
 
     require("codediff").setup(opts)
 
@@ -95,6 +101,52 @@ return {
     end
 
     local lifecycle = require "codediff.ui.lifecycle"
+    local navigation = require "codediff.ui.view.navigation"
+    local codediff_next_hunk = navigation.next_hunk
+
+    -- A deletion after the final retained line is represented as line_count + 1
+    -- on the modified side. CodeDiff 2.53 treats the failed cursor move as a
+    -- successful jump and never reaches its cross-file fallback.
+    local function handle_eof_deletion_hunk()
+      local tabpage = vim.api.nvim_get_current_tabpage()
+      ---@type ViterCodeDiffSession?
+      local session = lifecycle.get_session(tabpage)
+      local changes = session and session.stored_diff_result and session.stored_diff_result.changes
+      if not session or type(changes) ~= "table" or #changes == 0 then return end
+      if not opts.diff.cycle_hunks_across_files or not lifecycle.get_explorer(tabpage) then return end
+
+      local current_buf = vim.api.nvim_get_current_buf()
+      local uses_modified_lines = session.layout == "inline" or current_buf == session.modified_bufnr
+      if not uses_modified_lines then return end
+
+      local line_count = vim.api.nvim_buf_line_count(current_buf)
+      local current_line = vim.api.nvim_win_get_cursor(0)[1]
+
+      for index, change in ipairs(changes) do
+        local target_line = change.modified.start_line
+        if target_line > current_line then
+          if target_line <= line_count then return end
+
+          if current_line < line_count then
+            vim.api.nvim_win_set_cursor(0, { line_count, 0 })
+            vim.cmd "normal! zz"
+            vim.api.nvim_echo({ { ("Hunk %d of %d"):format(index, #changes), "None" } }, false, {})
+            return true
+          end
+
+          session.pending_cursor_landing = "first"
+          navigation.next_file()
+          return true
+        end
+      end
+    end
+
+    navigation.next_hunk = function()
+      local handled = handle_eof_deletion_hunk()
+      if handled ~= nil then return handled end
+      return codediff_next_hunk()
+    end
+
     local focus_explorer_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.focus_explorer
     local blocked_sidebar_keys = { "<leader>e", "<leader>o" }
 
