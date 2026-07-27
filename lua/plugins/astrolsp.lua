@@ -4,6 +4,18 @@ return {
 
   ---@type AstroLSPOpts
   opts = {
+    config = {
+      rust_analyzer = {
+        settings = {
+          ["rust-analyzer"] = {
+            -- Keep checks automatic, but use the faster command recommended by
+            -- the AstroCommunity Rust pack for large projects.
+            check = { command = "check", extraArgs = {} },
+          },
+        },
+      },
+    },
+
     features = {
       codelens = false,
       inlay_hints = false,

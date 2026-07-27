@@ -194,7 +194,7 @@ return {
           desc = "Browse individual commits",
         },
         ["<leader>ro"] = {
-          function() require("funcs").open_current_file_codediff() end,
+          function() require("funcs").open_codediff { "file", "HEAD" } end,
           desc = "Preview current file changes",
         },
 

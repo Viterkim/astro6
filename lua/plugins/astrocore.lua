@@ -24,26 +24,6 @@ return {
           callback = function() vim.cmd "clearjumps" end,
         },
       },
-      project_lsp_prewarm = {
-        {
-          event = "VimEnter",
-          desc = "Prewarm project LSPs from root markers",
-          callback = function() vim.defer_fn(function() require("utils.project_lsp_prewarm").start() end, 1000) end,
-        },
-      },
-    },
-    commands = {
-      ProjectLspPrewarm = {
-        function()
-          require("utils.project_lsp_prewarm").start()
-          require("utils.project_lsp_prewarm").status()
-        end,
-        desc = "Prewarm project LSPs from root markers",
-      },
-      ProjectLspPrewarmStatus = {
-        function() require("utils.project_lsp_prewarm").status() end,
-        desc = "Show project LSP prewarm status",
-      },
     },
     options = {
       opt = {

@@ -13,7 +13,6 @@ return {
         "fsautocomplete",
 
         -- Rust
-        "rust-analyzer",
         "codelldb",
 
         -- TypeScript / JavaScript
