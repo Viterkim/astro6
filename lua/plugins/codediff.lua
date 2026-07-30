@@ -116,6 +116,7 @@ return {
 
     local focus_explorer_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.focus_explorer
     local blocked_sidebar_keys = { "<leader>e", "<leader>o" }
+    local guarded_sidebar_buffers = {}
 
     local function remember_last_tab(tabpage)
       local tab = tabpage or vim.api.nvim_get_current_tabpage()
@@ -245,11 +246,85 @@ return {
 
     local function set_preview_sidebar_guards(tabpage)
       local tab = tabpage or vim.api.nvim_get_current_tabpage()
-      for _, lhs in ipairs(blocked_sidebar_keys) do
-        lifecycle.set_tab_keymap(tab, "n", lhs, "<Nop>", {
-          desc = "Disabled in CodeDiff",
-        })
+      local session = lifecycle.get_session(tab)
+      if not session then return end
+
+      local buffers = guarded_sidebar_buffers[tab] or {}
+      guarded_sidebar_buffers[tab] = buffers
+
+      local explorer_obj = lifecycle.get_explorer(tab)
+      local candidates = {
+        session.original_bufnr,
+        session.modified_bufnr,
+      }
+      if session.result_bufnr then table.insert(candidates, session.result_bufnr) end
+      if explorer_obj and explorer_obj.bufnr then table.insert(candidates, explorer_obj.bufnr) end
+
+      for _, bufnr in ipairs(candidates) do
+        if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+          for _, lhs in ipairs(blocked_sidebar_keys) do
+            vim.keymap.set("n", lhs, "<Nop>", {
+              buffer = bufnr,
+              desc = "Disabled in CodeDiff",
+              noremap = true,
+              silent = true,
+              nowait = true,
+            })
+          end
+          buffers[bufnr] = true
+        end
       end
+    end
+
+    local function clear_preview_sidebar_guards(tabpage)
+      local buffers = guarded_sidebar_buffers[tabpage]
+      if not buffers then return end
+
+      for bufnr in pairs(buffers) do
+        if vim.api.nvim_buf_is_valid(bufnr) then
+          for _, lhs in ipairs(blocked_sidebar_keys) do
+            pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })
+          end
+        end
+      end
+
+      guarded_sidebar_buffers[tabpage] = nil
+    end
+
+    local function restore_session_keymaps(tabpage)
+      if
+        not vim.api.nvim_tabpage_is_valid(tabpage)
+        or vim.api.nvim_get_current_tabpage() ~= tabpage
+        or not lifecycle.get_session(tabpage)
+      then
+        return
+      end
+
+      remap_focus_explorer(tabpage)
+      set_preview_sidebar_guards(tabpage)
+    end
+
+    local function schedule_restore_session_keymaps(tabpage)
+      -- CodeDiff also schedules its TabEnter keymap restoration. Defer twice so
+      -- these user overrides are applied after the plugin's own mappings.
+      vim.schedule(function()
+        vim.schedule(function() restore_session_keymaps(tabpage) end)
+      end)
+    end
+
+    local function clear_current_session_guards()
+      local tabpage = vim.api.nvim_get_current_tabpage()
+      if lifecycle.get_session(tabpage) then clear_preview_sidebar_guards(tabpage) end
+    end
+
+    local function restore_current_session_keymaps()
+      local tabpage = vim.api.nvim_get_current_tabpage()
+      if lifecycle.get_session(tabpage) then schedule_restore_session_keymaps(tabpage) end
+    end
+
+    local function clear_closed_session_guards(args)
+      local tabpage = args.data and args.data.tabpage
+      if tabpage then clear_preview_sidebar_guards(tabpage) end
     end
 
     local function apply_session_customizations(tabpage, expected_path, attempt)
@@ -272,6 +347,22 @@ return {
     end
 
     local customization_group = vim.api.nvim_create_augroup("viter_codediff_customizations", { clear = true })
+
+    vim.api.nvim_create_autocmd("TabLeave", {
+      group = customization_group,
+      callback = clear_current_session_guards,
+    })
+
+    vim.api.nvim_create_autocmd("TabEnter", {
+      group = customization_group,
+      callback = restore_current_session_keymaps,
+    })
+
+    vim.api.nvim_create_autocmd("User", {
+      group = customization_group,
+      pattern = "CodeDiffClose",
+      callback = clear_closed_session_guards,
+    })
 
     vim.api.nvim_create_autocmd("User", {
       group = customization_group,
