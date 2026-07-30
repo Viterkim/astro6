@@ -151,6 +151,17 @@ return {
   opts = function(_, opts)
     opts.server = opts.server or {}
 
+    local default_on_attach = opts.server.on_attach
+    opts.server.on_attach = function(client, bufnr)
+      if default_on_attach then default_on_attach(client, bufnr) end
+
+      -- TreeSitter already highlights Rust. Avoid a second highlighting path
+      -- that repeatedly requests and cancels semantic tokens while editing.
+      -- This is Neovim's supported on_attach opt-out and also keeps CodeDiff
+      -- from opening synthetic codediff:// documents in rust-analyzer.
+      client.server_capabilities.semanticTokensProvider = nil
+    end
+
     local default_auto_attach = opts.server.auto_attach
     opts.server.auto_attach = function(bufnr)
       if default_auto_attach == false then return false end

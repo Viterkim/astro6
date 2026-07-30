@@ -40,8 +40,7 @@ if os == "Linux" then vim.opt.mousescroll = "ver:1,hor:2" end
 
 vim.api.nvim_create_user_command("UpdateAll", function()
   vim.cmd "AstroUpdate"
-  vim.cmd "TSUpdate"
-end, { desc = "Update AstroNvim packages and Treesitter parsers" })
+end, { desc = "Update AstroNvim packages" })
 
 vim.api.nvim_create_user_command("Res", function() require("funcs").restart_with_session() end, {
   desc = "Restart Neovim and restore session",

@@ -11,6 +11,9 @@ return {
     explorer = {
       initial_focus = "modified",
       focus_on_select = true,
+      -- Avoid recursively enumerating every untracked file in large worktrees.
+      -- Directories with untracked content still appear as collapsed entries.
+      untracked = "normal",
     },
 
     keymaps = {
@@ -64,48 +67,12 @@ return {
 
     require("codediff").setup(opts)
 
-    -- CodeDiff asks the real buffer's LSP for semantic tokens for codediff://
-    -- revision buffers. rust-analyzer treats those URIs as extra workspace
-    -- documents, and CodeDiff 2.53 can send duplicate didOpen/orphan didClose
-    -- notifications while changing files or closing the view. Keep TreeSitter
-    -- highlighting for Rust diffs, but do not involve rust-analyzer.
-    local semantic_tokens = require "codediff.ui.semantic_tokens"
-    local apply_semantic_tokens = semantic_tokens.apply_semantic_tokens
-
-    local function is_rust_buffer(bufnr)
-      if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return false end
-      if vim.bo[bufnr].filetype == "rust" then return true end
-      return vim.api.nvim_buf_get_name(bufnr):match "%.rs$" ~= nil
-    end
-
-    semantic_tokens.apply_semantic_tokens = function(virtual_buf, source_buf)
-      if is_rust_buffer(virtual_buf) or is_rust_buffer(source_buf) then return false end
-      return apply_semantic_tokens(virtual_buf, source_buf)
-    end
-
-    -- Cleanup sends didClose independently of whether semantic highlighting
-    -- opened the virtual document. Filter only CodeDiff's rust-analyzer
-    -- notifications; normal Neovim LSP traffic remains untouched.
-    local codediff_compat = require "codediff.core.compat"
-    local codediff_lsp_notify = codediff_compat.lsp_notify
-
-    codediff_compat.lsp_notify = function(client, method, params)
-      local client_name = client and client.name
-      local uri = params and params.textDocument and params.textDocument.uri
-      local rust_analyzer = client_name == "rust-analyzer" or client_name == "rust_analyzer"
-      local virtual_document = type(uri) == "string" and uri:match "^codediff:"
-      local document_lifecycle = method == "textDocument/didOpen" or method == "textDocument/didClose"
-
-      if rust_analyzer and virtual_document and document_lifecycle then return true end
-      return codediff_lsp_notify(client, method, params)
-    end
-
     local lifecycle = require "codediff.ui.lifecycle"
     local navigation = require "codediff.ui.view.navigation"
     local codediff_next_hunk = navigation.next_hunk
 
     -- A deletion after the final retained line is represented as line_count + 1
-    -- on the modified side. CodeDiff 2.53 treats the failed cursor move as a
+    -- on the modified side. CodeDiff 2.60 treats the failed cursor move as a
     -- successful jump and never reaches its cross-file fallback.
     local function handle_eof_deletion_hunk()
       local tabpage = vim.api.nvim_get_current_tabpage()
@@ -206,7 +173,7 @@ return {
 
       local windows = { session.original_win, session.modified_win, session.result_win }
 
-      -- CodeDiff 2.53 enforces nowrap during view lifecycle events. Restore the
+      -- CodeDiff 2.60 enforces nowrap during view lifecycle events. Restore the
       -- wrapped view after those events so deeply indented code remains visible.
       for _, win in ipairs(windows) do
         if win and vim.api.nvim_win_is_valid(win) then
@@ -326,23 +293,6 @@ return {
         if session and (win == session.original_win or win == session.modified_win or win == session.result_win) then
           vim.schedule(function() wrap_diff_windows(tabpage) end)
         end
-      end,
-    })
-
-    vim.api.nvim_create_autocmd("User", {
-      group = customization_group,
-      pattern = "CodeDiffClose",
-      callback = function()
-        vim.schedule(function()
-          -- CodeDiff 2.53 can move its unlisted working buffer into the
-          -- previous tab with `i`. Make it a normal AstroNvim buffer again.
-          for _, win in ipairs(vim.api.nvim_list_wins()) do
-            local bufnr = vim.api.nvim_win_get_buf(win)
-            if vim.bo[bufnr].buftype == "" and vim.api.nvim_buf_get_name(bufnr) ~= "" then
-              vim.bo[bufnr].buflisted = true
-            end
-          end
-        end)
       end,
     })
 

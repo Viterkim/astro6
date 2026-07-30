@@ -24,7 +24,9 @@ return {
       },
 
       hijack_netrw_behavior = "open_current",
-      use_libuv_file_watcher = true,
+      -- Avoid recursive filesystem watcher traffic in large Rust workspaces.
+      -- Neo-tree still refreshes when opened and after its own file operations.
+      use_libuv_file_watcher = false,
       use_popups_for_input = true,
     },
 

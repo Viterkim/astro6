@@ -8,9 +8,15 @@ return {
       rust_analyzer = {
         settings = {
           ["rust-analyzer"] = {
-            -- Keep checks automatic, but use the faster command recommended by
-            -- the AstroCommunity Rust pack for large projects.
-            check = { command = "check", extraArgs = {} },
+            -- Keep Clippy diagnostics on save, but scope them to the package
+            -- containing the saved file. The defaults add --workspace and
+            -- --all-targets, which is very expensive in large workspaces.
+            check = {
+              command = "clippy",
+              extraArgs = { "--no-deps" },
+              workspace = false,
+              allTargets = false,
+            },
           },
         },
       },
