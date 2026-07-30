@@ -13,7 +13,7 @@ if not (vim.env.LAZY or (vim.uv or vim.loop).fs_stat(lazypath)) then
   end
 end
 
-vim.opt.rtp:prepend(lazypath)
+vim.o.rtp = lazypath .. "," .. vim.o.rtp
 
 -- validate that lazy is available
 if not pcall(require, "lazy") then

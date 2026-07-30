@@ -14,6 +14,13 @@ local function toolchain_cwd(filename)
     if vim.fs.find({ "rust-toolchain.toml", "rust-toolchain", "Cargo.toml" }, { path = cwd, upward = true })[1] then
       return cwd
     end
+
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      local name = vim.api.nvim_buf_is_loaded(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
+      if vim.bo[bufnr].filetype == "rust" and name ~= "" and not is_dependency_source(name) then
+        return toolchain_cwd(name)
+      end
+    end
   end
 
   local directory = vim.fs.dirname(filename)
@@ -21,11 +28,13 @@ local function toolchain_cwd(filename)
     path = directory,
     upward = true,
   })[1]
-  return toolchain and vim.fs.dirname(toolchain) or directory
+  if toolchain then return vim.fs.dirname(toolchain) end
+
+  local manifest = vim.fs.find("Cargo.toml", { path = directory, upward = true })[1]
+  return manifest and vim.fs.dirname(manifest) or directory
 end
 
 local analyzer_state = {}
-local pending_dependency_starts = {}
 
 local function start_buffer(bufnr)
   if
@@ -38,54 +47,13 @@ local function start_buffer(bufnr)
   end
 end
 
-local function has_initialized_analyzer()
-  return vim
-    .iter(vim.lsp.get_clients { name = "rust-analyzer" })
-    :any(function(client) return client.initialized and not client:is_stopped() end)
-end
-
-local function has_project_rust_buffer()
-  return vim.iter(vim.api.nvim_list_bufs()):any(
-    function(bufnr)
-      return vim.api.nvim_buf_is_loaded(bufnr)
-        and vim.bo[bufnr].filetype == "rust"
-        and not is_dependency_source(vim.api.nvim_buf_get_name(bufnr))
-    end
-  )
-end
-
-local function defer_dependency_start(bufnr, attempt)
-  if pending_dependency_starts[bufnr] and not attempt then return end
-  pending_dependency_starts[bufnr] = true
-  attempt = attempt or 1
-
-  if has_initialized_analyzer() or not has_project_rust_buffer() or attempt >= 100 then
-    pending_dependency_starts[bufnr] = nil
-    start_buffer(bufnr)
-  else
-    vim.defer_fn(function() defer_dependency_start(bufnr, attempt + 1) end, 100)
-  end
-end
-
 local function start_waiting_buffers(buffers)
-  local project_buffers = {}
-  local dependency_buffers = {}
-
   for bufnr in pairs(buffers) do
-    local filename = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
-    table.insert(is_dependency_source(filename) and dependency_buffers or project_buffers, bufnr)
-  end
-
-  for _, bufnr in ipairs(project_buffers) do
     start_buffer(bufnr)
-  end
-
-  for _, bufnr in ipairs(dependency_buffers) do
-    defer_dependency_start(bufnr)
   end
 end
 
-local function finish_analyzer_check(key, success, installed, error_message)
+local function finish_analyzer_check(key, success, installed, error_message, executable)
   vim.schedule(function()
     local state = analyzer_state[key]
     if not state then return end
@@ -93,6 +61,7 @@ local function finish_analyzer_check(key, success, installed, error_message)
     local buffers = state.buffers
     state.buffers = {}
     state.status = success and "ready" or nil
+    state.executable = success and executable or nil
 
     if not success then
       vim.notify(
@@ -124,7 +93,7 @@ local function ensure_rust_analyzer(bufnr)
   state.status = "checking"
   vim.system({ "rustup", "which", "rust-analyzer" }, { cwd = cwd, text = true }, function(which)
     if which.code == 0 then
-      finish_analyzer_check(key, true, false)
+      finish_analyzer_check(key, true, false, nil, vim.trim(which.stdout or ""))
       return
     end
 
@@ -133,11 +102,20 @@ local function ensure_rust_analyzer(bufnr)
       if not current then return end
       current.status = "installing"
       vim.notify "Installing rust-analyzer for this project's Rust toolchain…"
-      vim.system(
-        { "rustup", "component", "add", "rust-analyzer" },
-        { cwd = cwd, text = true },
-        function(install) finish_analyzer_check(key, install.code == 0, true, install.stderr) end
-      )
+      vim.system({ "rustup", "component", "add", "rust-analyzer" }, { cwd = cwd, text = true }, function(install)
+        if install.code ~= 0 then
+          finish_analyzer_check(key, false, true, install.stderr)
+          return
+        end
+
+        vim.system(
+          { "rustup", "which", "rust-analyzer" },
+          { cwd = cwd, text = true },
+          function(result)
+            finish_analyzer_check(key, result.code == 0, true, result.stderr, vim.trim(result.stdout or ""))
+          end
+        )
+      end)
     end)
   end)
 
@@ -150,15 +128,12 @@ return {
   dependencies = { "AstroNvim/astrolsp" },
   opts = function(_, opts)
     opts.server = opts.server or {}
+    local command_cwd
 
     local default_on_attach = opts.server.on_attach
     opts.server.on_attach = function(client, bufnr)
       if default_on_attach then default_on_attach(client, bufnr) end
 
-      -- TreeSitter already highlights Rust. Avoid a second highlighting path
-      -- that repeatedly requests and cancels semantic tokens while editing.
-      -- This is Neovim's supported on_attach opt-out and also keeps CodeDiff
-      -- from opening synthetic codediff:// documents in rust-analyzer.
       client.server_capabilities.semanticTokensProvider = nil
     end
 
@@ -168,35 +143,36 @@ return {
       if type(default_auto_attach) == "function" and not default_auto_attach(bufnr) then return false end
       if not ensure_rust_analyzer(bufnr) then return false end
 
-      if
-        is_dependency_source(vim.api.nvim_buf_get_name(bufnr))
-        and has_project_rust_buffer()
-        and not has_initialized_analyzer()
-      then
-        defer_dependency_start(bufnr)
-        return false
-      end
-
       return true
     end
 
-    -- Mason's bin directory can shadow rustup's proxy directory. Resolve the
-    -- analyzer component itself so the project's pinned toolchain always wins.
+    -- use the project's toolchain
     opts.server.cmd = function()
-      -- This runs after asynchronous root detection, when the current buffer
-      -- may already be a codediff:// preview rather than the Rust source.
-      local cwd = vim.uv.cwd() or vim.fn.getcwd()
+      local cwd = command_cwd
+      command_cwd = nil
+      if cwd then
+        cwd = toolchain_cwd(vim.fs.joinpath(cwd, "Cargo.toml"))
+      else
+        local filename = vim.api.nvim_buf_get_name(0)
+        local is_file = filename ~= "" and vim.bo.buftype == "" and not filename:match "^%w+://"
+        cwd = is_file and toolchain_cwd(filename) or (vim.uv.cwd() or vim.fn.getcwd())
+      end
+      if not vim.uv.fs_stat(cwd) then cwd = vim.uv.cwd() or vim.fn.getcwd() end
+
+      local state = analyzer_state[vim.fs.normalize(cwd)]
+      if state and state.executable and state.executable ~= "" then return { state.executable } end
+
       local result = vim.system({ "rustup", "which", "rust-analyzer" }, { cwd = cwd, text = true }):wait()
       local executable = result.code == 0 and vim.trim(result.stdout or "") or ""
       return { executable ~= "" and executable or "rust-analyzer" }
     end
 
-    -- AstroCommunity captures AstroLSP settings too early when a Rust file is
-    -- restored during startup. Resolve them when rust-analyzer actually starts.
     opts.server.settings = function(project_root, default_settings)
+      command_cwd = project_root
       vim.lsp.config("rust_analyzer", {})
       local astrolsp = vim.lsp.config.rust_analyzer or {}
-      local defaults = require("astrocore").extend_tbl(default_settings or {}, astrolsp.settings or {})
+      local astrocore = require "astrocore" --[[@as astrocore]]
+      local defaults = astrocore.extend_tbl(default_settings or {}, astrolsp.settings or {})
       return require("rustaceanvim.config.server").load_rust_analyzer_settings(project_root, {
         settings_file_pattern = "rust-analyzer.json",
         default_settings = defaults,

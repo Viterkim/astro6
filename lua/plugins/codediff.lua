@@ -11,11 +11,8 @@ return {
     explorer = {
       initial_focus = "modified",
       focus_on_select = true,
-      -- Avoid recursively enumerating every untracked file in large worktrees.
-      -- Directories with untracked content still appear as collapsed entries.
       untracked = "normal",
     },
-
     keymaps = {
       view = {
         next_hunk = "e",
@@ -34,371 +31,115 @@ return {
     },
   },
   config = function(_, opts)
-    ---@class ViterCodeDiffExplorerSplit
-    ---@field winid? integer
-
-    ---@class ViterCodeDiffExplorer
-    ---@field split? ViterCodeDiffExplorerSplit
-    ---@field winid? integer
-    ---@field bufnr? integer
-    ---@field is_hidden? boolean
-
-    ---@class ViterCodeDiffPath
-    ---@field absolute string
-    ---@field relative string
-
-    ---@class ViterCodeDiffSession
-    ---@field stored_diff_result? { changes?: ViterCodeDiffChange[] }
-    ---@field modified_win? integer
-    ---@field original_win? integer
-    ---@field result_win? integer
-    ---@field original_bufnr? integer
-    ---@field modified_bufnr? integer
-    ---@field result_bufnr? integer
-    ---@field modified? ViterCodeDiffPath
-    ---@field git_root? string
-    ---@field explorer? ViterCodeDiffExplorer
-    ---@field layout? "inline"|"side-by-side"
-    ---@field pending_cursor_landing? "first"|"last"
-
-    ---@class ViterCodeDiffChange
-    ---@field original { start_line: integer }
-    ---@field modified { start_line: integer }
-
     require("codediff").setup(opts)
 
-    local lifecycle = require "codediff.ui.lifecycle"
-    local navigation = require "codediff.ui.view.navigation"
-    local codediff_next_hunk = navigation.next_hunk
+    local group = vim.api.nvim_create_augroup("viter_codediff", { clear = true })
+    local pending = {}
 
-    -- A deletion after the final retained line is represented as line_count + 1
-    -- on the modified side. CodeDiff 2.60 treats the failed cursor move as a
-    -- successful jump and never reaches its cross-file fallback.
-    local function handle_eof_deletion_hunk()
-      local tabpage = vim.api.nvim_get_current_tabpage()
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tabpage)
-      local changes = session and session.stored_diff_result and session.stored_diff_result.changes
-      if not session or type(changes) ~= "table" or #changes == 0 then return end
-      if not opts.diff.cycle_hunks_across_files or not lifecycle.get_explorer(tabpage) then return end
+    local function diff_window(tabpage)
+      if not tabpage or not vim.api.nvim_tabpage_is_valid(tabpage) then return end
 
-      local current_buf = vim.api.nvim_get_current_buf()
-      local uses_modified_lines = session.layout == "inline" or current_buf == session.modified_bufnr
-      if not uses_modified_lines then return end
+      local current = vim.api.nvim_get_current_win()
+      local fallback
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+        local filetype = vim.bo[vim.api.nvim_win_get_buf(win)].filetype
+        if filetype ~= "codediff-explorer" and filetype ~= "codediff-history" then
+          if win == current then return win end
+          if not fallback or vim.api.nvim_win_get_position(win)[2] > vim.api.nvim_win_get_position(fallback)[2] then
+            fallback = win
+          end
+        end
+      end
+      return fallback
+    end
 
-      local line_count = vim.api.nvim_buf_line_count(current_buf)
-      local current_line = vim.api.nvim_win_get_cursor(0)[1]
+    local function settle_view(tabpage)
+      vim.schedule(function()
+        vim.schedule(function()
+          local state = pending[tabpage]
+          if not state or not vim.api.nvim_tabpage_is_valid(tabpage) then return end
 
-      for index, change in ipairs(changes) do
-        local target_line = change.modified.start_line
-        if target_line > current_line then
-          if target_line <= line_count then return end
+          for _, window in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+            local bufnr = vim.api.nvim_win_get_buf(window)
+            if vim.startswith(vim.api.nvim_buf_get_name(bufnr), "codediff://") then
+              if not vim.b[bufnr].viter_codediff_loaded then return end
+            end
+          end
+          local win = diff_window(tabpage)
+          if not win then return end
 
-          if current_line < line_count then
-            vim.api.nvim_win_set_cursor(0, { line_count, 0 })
-            vim.cmd "normal! zz"
-            vim.api.nvim_echo({ { ("Hunk %d of %d"):format(index, #changes), "None" } }, false, {})
-            return true
+          if state.line then
+            local bufnr = vim.api.nvim_win_get_buf(win)
+            local line = math.max(1, math.min(state.line, vim.api.nvim_buf_line_count(bufnr)))
+            pcall(vim.api.nvim_win_set_cursor, win, { line, state.col or 0 })
+            vim.g.viter_codediff_continue_file = nil
+            vim.g.viter_codediff_continue_line = nil
+            vim.g.viter_codediff_continue_col = nil
           end
 
-          session.pending_cursor_landing = "first"
-          navigation.next_file()
-          return true
-        end
-      end
-    end
-
-    navigation.next_hunk = function()
-      local handled = handle_eof_deletion_hunk()
-      if handled ~= nil then return handled end
-      return codediff_next_hunk()
-    end
-
-    local focus_explorer_key = opts.keymaps and opts.keymaps.view and opts.keymaps.view.focus_explorer
-    local blocked_sidebar_keys = { "<leader>e", "<leader>o" }
-    local guarded_sidebar_buffers = {}
-
-    local function remember_last_tab(tabpage)
-      local tab = tabpage or vim.api.nvim_get_current_tabpage()
-      if tab and vim.api.nvim_tabpage_is_valid(tab) then vim.g.viter_codediff_last_tab = tab end
-    end
-
-    ---@param session ViterCodeDiffSession?
-    local function continue_target_matches(session)
-      local target_file = vim.g.viter_codediff_continue_file
-      if type(target_file) ~= "string" or target_file == "" then return true end
-      local session_file = session and session.modified and session.modified.absolute
-      if type(session_file) ~= "string" or session_file == "" then return false end
-
-      return vim.fn.fnamemodify(session_file, ":p") == vim.fn.fnamemodify(target_file, ":p")
-    end
-
-    local function consume_continue_landing(tabpage, attempt)
-      local target_line = vim.g.viter_codediff_continue_line
-      if type(target_line) ~= "number" then return end
-
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tabpage or vim.api.nvim_get_current_tabpage())
-      local win = session and session.modified_win
-      if
-        not session
-        or not continue_target_matches(session)
-        or not session.stored_diff_result
-        or not win
-        or not vim.api.nvim_win_is_valid(win)
-        or not vim.api.nvim_buf_is_valid(vim.api.nvim_win_get_buf(win))
-      then
-        if (attempt or 1) < 30 then
-          vim.defer_fn(function() consume_continue_landing(tabpage, (attempt or 1) + 1) end, 50)
-        end
-        return
-      end
-
-      local line_count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win))
-      local line = math.max(1, math.min(target_line, line_count))
-      local col = type(vim.g.viter_codediff_continue_col) == "number" and vim.g.viter_codediff_continue_col or 0
-
-      vim.api.nvim_set_current_win(win)
-      pcall(vim.api.nvim_win_set_cursor, win, { line, col })
-      vim.cmd "normal! zz"
-      vim.g.viter_codediff_continue_file = nil
-      vim.g.viter_codediff_continue_line = nil
-      vim.g.viter_codediff_continue_col = nil
-    end
-
-    local function wrap_diff_windows(tabpage)
-      local tab = tabpage or vim.api.nvim_get_current_tabpage()
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tab)
-      if not session then return end
-
-      local windows = { session.original_win, session.modified_win, session.result_win }
-
-      -- CodeDiff 2.60 enforces nowrap during view lifecycle events. Restore the
-      -- wrapped view after those events so deeply indented code remains visible.
-      for _, win in ipairs(windows) do
-        if win and vim.api.nvim_win_is_valid(win) then
-          vim.wo[win].wrap = true
-          vim.wo[win].linebreak = true
-          vim.wo[win].breakindent = true
-        end
-      end
-    end
-
-    ---@param explorer_obj ViterCodeDiffExplorer?
-    ---@return integer?
-    local function get_explorer_win(explorer_obj)
-      local split = explorer_obj and explorer_obj.split
-      local win = split and split.winid
-      if win and vim.api.nvim_win_is_valid(win) then return win end
-
-      win = explorer_obj and explorer_obj.winid
-      if win and vim.api.nvim_win_is_valid(win) then return win end
-
-      local buf = explorer_obj and explorer_obj.bufnr
-      if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
-
-      win = vim.fn.bufwinid(buf)
-      if win == -1 or not vim.api.nvim_win_is_valid(win) then return end
-
-      if split then split.winid = win end
-      explorer_obj.winid = win
-      return win
-    end
-
-    local function focus_sidebar_or_modified(tabpage)
-      ---@type ViterCodeDiffSession?
-      local session = lifecycle.get_session(tabpage)
-      ---@type ViterCodeDiffExplorer?
-      local explorer_obj = lifecycle.get_explorer(tabpage)
-      if not session or not explorer_obj then return end
-
-      local current_win = vim.api.nvim_get_current_win()
-      local current_buf = vim.api.nvim_get_current_buf()
-      local explorer_win = get_explorer_win(explorer_obj)
-      local in_explorer = current_buf == explorer_obj.bufnr or (explorer_win and current_win == explorer_win)
-
-      if in_explorer then
-        local target = session.modified_win
-        if not (target and vim.api.nvim_win_is_valid(target)) then target = session.original_win end
-        if not (target and vim.api.nvim_win_is_valid(target)) then target = session.result_win end
-        if target and vim.api.nvim_win_is_valid(target) then vim.api.nvim_set_current_win(target) end
-        return
-      end
-
-      if explorer_obj.is_hidden or not explorer_win then
-        require("codediff.ui.explorer").toggle_visibility(explorer_obj)
-      end
-
-      vim.schedule(function()
-        local target = get_explorer_win(explorer_obj)
-        if target then vim.api.nvim_set_current_win(target) end
+          vim.api.nvim_set_current_win(win)
+          vim.cmd "normal! zz"
+          pending[tabpage] = nil
+        end)
       end)
     end
 
-    local function remap_focus_explorer(tabpage)
-      if not focus_explorer_key then return end
-      local tab = tabpage or vim.api.nvim_get_current_tabpage()
-      lifecycle.set_tab_keymap(tab, "n", focus_explorer_key, function() focus_sidebar_or_modified(tab) end, {
-        desc = "Toggle CodeDiff sidebar focus",
-      })
-    end
-
-    local function set_preview_sidebar_guards(tabpage)
-      local tab = tabpage or vim.api.nvim_get_current_tabpage()
-      local session = lifecycle.get_session(tab)
-      if not session then return end
-
-      local buffers = guarded_sidebar_buffers[tab] or {}
-      guarded_sidebar_buffers[tab] = buffers
-
-      local explorer_obj = lifecycle.get_explorer(tab)
-      local candidates = {
-        session.original_bufnr,
-        session.modified_bufnr,
-      }
-      if session.result_bufnr then table.insert(candidates, session.result_bufnr) end
-      if explorer_obj and explorer_obj.bufnr then table.insert(candidates, explorer_obj.bufnr) end
-
-      for _, bufnr in ipairs(candidates) do
-        if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-          for _, lhs in ipairs(blocked_sidebar_keys) do
-            vim.keymap.set("n", lhs, "<Nop>", {
-              buffer = bufnr,
-              desc = "Disabled in CodeDiff",
-              noremap = true,
-              silent = true,
-              nowait = true,
-            })
-          end
-          buffers[bufnr] = true
-        end
-      end
-    end
-
-    local function clear_preview_sidebar_guards(tabpage)
-      local buffers = guarded_sidebar_buffers[tabpage]
-      if not buffers then return end
-
-      for bufnr in pairs(buffers) do
-        if vim.api.nvim_buf_is_valid(bufnr) then
-          for _, lhs in ipairs(blocked_sidebar_keys) do
-            pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })
-          end
-        end
-      end
-
-      guarded_sidebar_buffers[tabpage] = nil
-    end
-
-    local function restore_session_keymaps(tabpage)
-      if
-        not vim.api.nvim_tabpage_is_valid(tabpage)
-        or vim.api.nvim_get_current_tabpage() ~= tabpage
-        or not lifecycle.get_session(tabpage)
-      then
-        return
-      end
-
-      remap_focus_explorer(tabpage)
-      set_preview_sidebar_guards(tabpage)
-    end
-
-    local function schedule_restore_session_keymaps(tabpage)
-      -- CodeDiff also schedules its TabEnter keymap restoration. Defer twice so
-      -- these user overrides are applied after the plugin's own mappings.
-      vim.schedule(function()
-        vim.schedule(function() restore_session_keymaps(tabpage) end)
-      end)
-    end
-
-    local function clear_current_session_guards()
-      local tabpage = vim.api.nvim_get_current_tabpage()
-      if lifecycle.get_session(tabpage) then clear_preview_sidebar_guards(tabpage) end
-    end
-
-    local function restore_current_session_keymaps()
-      local tabpage = vim.api.nvim_get_current_tabpage()
-      if lifecycle.get_session(tabpage) then schedule_restore_session_keymaps(tabpage) end
-    end
-
-    local function clear_closed_session_guards(args)
-      local tabpage = args.data and args.data.tabpage
-      if tabpage then clear_preview_sidebar_guards(tabpage) end
-    end
-
-    local function apply_session_customizations(tabpage, expected_path, attempt)
-      local tab = tabpage or vim.api.nvim_get_current_tabpage()
-      local session = lifecycle.get_session(tab)
-      local current_path = session and session.modified and session.modified.relative
-      local ready = session and session.stored_diff_result and (not expected_path or current_path == expected_path)
-
-      if not ready then
-        if (attempt or 1) < 100 then
-          vim.defer_fn(function() apply_session_customizations(tab, expected_path, (attempt or 1) + 1) end, 50)
-        end
-        return
-      end
-
-      consume_continue_landing(tab)
-      remap_focus_explorer(tab)
-      set_preview_sidebar_guards(tab)
-      wrap_diff_windows(tab)
-    end
-
-    local customization_group = vim.api.nvim_create_augroup("viter_codediff_customizations", { clear = true })
-
-    vim.api.nvim_create_autocmd("TabLeave", {
-      group = customization_group,
-      callback = clear_current_session_guards,
-    })
-
-    vim.api.nvim_create_autocmd("TabEnter", {
-      group = customization_group,
-      callback = restore_current_session_keymaps,
-    })
-
     vim.api.nvim_create_autocmd("User", {
-      group = customization_group,
-      pattern = "CodeDiffClose",
-      callback = clear_closed_session_guards,
-    })
-
-    vim.api.nvim_create_autocmd("User", {
-      group = customization_group,
-      pattern = { "CodeDiffOpen", "CodeDiffFileSelect" },
+      group = group,
+      pattern = "CodeDiffOpen",
       callback = function(args)
         local tabpage = args.data and args.data.tabpage
-        remember_last_tab(tabpage)
-        local expected_path = args.data and args.data.path
-        vim.schedule(function() apply_session_customizations(tabpage, expected_path) end)
-      end,
-    })
-
-    vim.api.nvim_create_autocmd("WinEnter", {
-      group = customization_group,
-      callback = function()
-        local tabpage = vim.api.nvim_get_current_tabpage()
-        local session = lifecycle.get_session(tabpage)
-        local win = vim.api.nvim_get_current_win()
-        if session and (win == session.original_win or win == session.modified_win or win == session.result_win) then
-          vim.schedule(function() wrap_diff_windows(tabpage) end)
-        end
+        if tabpage then vim.g.viter_codediff_last_tab = tabpage end
       end,
     })
 
     vim.api.nvim_create_autocmd("User", {
-      group = vim.api.nvim_create_augroup("viter_codediff_continue", { clear = true }),
+      group = group,
       pattern = "CodeDiffFileSelect",
       callback = function(args)
-        if not args.data or not args.data.path then return end
+        local data = args.data or {}
+        if not data.tabpage then return end
+        if data.tabpage then vim.g.viter_codediff_last_tab = data.tabpage end
+        if data.path then vim.g.viter_codediff_last_file = data.path end
 
-        local tabpage = args.data.tabpage or vim.api.nvim_get_current_tabpage()
-        ---@type ViterCodeDiffSession?
-        local session = lifecycle.get_session(tabpage)
-        remember_last_tab(args.data.tabpage)
-        vim.g.viter_codediff_last_file = args.data.path
-        vim.g.viter_codediff_last_root = session and session.git_root or nil
+        local continue_file = vim.g.viter_codediff_continue_file
+        local root = vim.g.viter_codediff_last_root
+        local selected = root and data.path and vim.fs.normalize(vim.fs.joinpath(root, data.path))
+        pending[data.tabpage] = {
+          line = continue_file and selected == vim.fs.normalize(continue_file) and vim.g.viter_codediff_continue_line
+            or nil,
+          col = vim.g.viter_codediff_continue_col,
+        }
+      end,
+    })
+
+    vim.api.nvim_create_autocmd("User", {
+      group = group,
+      pattern = "CodeDiffVirtualFileLoaded",
+      callback = function(args)
+        local bufnr = args.data and args.data.buf
+        if bufnr then vim.b[bufnr].viter_codediff_loaded = true end
+        for tabpage in pairs(pending) do
+          settle_view(tabpage)
+        end
+      end,
+    })
+
+    vim.api.nvim_create_autocmd("BufWinEnter", {
+      group = group,
+      callback = function()
+        local tabpage = vim.api.nvim_get_current_tabpage()
+        if pending[tabpage] then settle_view(tabpage) end
+      end,
+    })
+
+    vim.api.nvim_create_autocmd("User", {
+      group = group,
+      pattern = "CodeDiffClose",
+      callback = function(args)
+        local tabpage = args.data and args.data.tabpage
+        if tabpage then pending[tabpage] = nil end
+        if vim.g.viter_codediff_last_tab == tabpage then vim.g.viter_codediff_last_tab = nil end
       end,
     })
   end,

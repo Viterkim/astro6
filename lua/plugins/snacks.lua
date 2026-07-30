@@ -67,6 +67,8 @@ return {
     })
   end,
   opts = {
+    input = { enabled = false },
+
     indent = {
       -- CodeDiff intentionally uses unlisted real-file buffers. AstroNvim's
       -- default filter excludes those, leaving guides on only the virtual pane.

@@ -120,14 +120,6 @@ return {
           desc = "Copy diagnostics",
         },
         ["<leader>ii"] = { function() require("snacks").picker.diagnostics() end, desc = "All diagnostics" },
-        ["<leader>im"] = {
-          function()
-            local rm = require "render-markdown"
-            rm.toggle()
-            vim.notify("RenderMarkdown: " .. (rm.get() and "ON" or "OFF"))
-          end,
-          desc = "Toggle RenderMarkdown",
-        },
         ["<leader>ir"] = { function() require("snacks").picker.lsp_references() end, desc = "Show References" },
         ["<leader>ff"] = { function() require("snacks").picker.files() end, desc = "Find Files" },
         ["<leader>fw"] = { function() require("snacks").picker.grep() end, desc = "Find Words" },
@@ -161,9 +153,7 @@ return {
                 picker:close()
                 if not item or not item.commit then return end
 
-                vim.schedule(function()
-                  require("funcs").open_codediff { item.commit .. "^", item.commit }
-                end)
+                vim.schedule(function() require("funcs").open_codediff { item.commit .. "^", item.commit } end)
               end,
             }
           end,
@@ -181,9 +171,7 @@ return {
                 picker:close()
                 if not item or not item.commit then return end
 
-                vim.schedule(function()
-                  require("funcs").open_codediff { item.commit }
-                end)
+                vim.schedule(function() require("funcs").open_codediff { item.commit } end)
               end,
             }
           end,
@@ -213,7 +201,7 @@ return {
               "── Inside CodeDiff ──────────────────────────────",
               "<Up>/<Down>  Browse files and update the diff",
               "<Enter>      Open selected commit or file",
-              "o            Jump between sidebar and modified pane",
+              "o            Focus CodeDiff sidebar",
               "y            Toggle CodeDiff sidebar",
               "H / h        Move left / right between windows",
               "k / K        Move down / up between windows",
@@ -263,8 +251,6 @@ return {
           desc = "Strip trailing whitespace (current buffer)",
         },
 
-        -- session
-        ["<leader>S"] = { desc = "Session" },
         ["<leader>Sq"] = {
           function() require("funcs").save_session_and_quit() end,
           desc = "Save session and quit",
@@ -272,7 +258,7 @@ return {
 
         -- leader other
         ["<leader>ti"] = { function() require("neotest").output.open { enter = true } end, desc = "Neotest Output" },
-        ["<leader>q"] = { function() require("funcs").quit_window_or_nvim() end, desc = "Quit window / Neovim" },
+        ["<Leader>q"] = { function() require("funcs").quit_window_or_nvim() end, desc = "Quit window / Neovim" },
         ["<leader>0"] = {
           function() require("funcs").sudoku_quit() end,
           desc = "Nuke all windows",

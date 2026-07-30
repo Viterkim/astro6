@@ -303,7 +303,6 @@ local function apply_first_matching_code_action(filter, context, timeout_ms)
   end
 
   for _, client in ipairs(clients) do
-    ---@type lsp.CodeActionParams
     local params = {
       textDocument = vim.lsp.util.make_text_document_params(bufnr),
       range = vim.lsp.util.make_range_params(0, client.offset_encoding).range,
@@ -351,7 +350,7 @@ function M.rust_fill_match_arms_smart()
     return
   end
 
-  vim.defer_fn(function() replace_generated_todos_with_braces(open_pos) end, 120)
+  replace_generated_todos_with_braces(open_pos)
 end
 
 function M.select_whole_file() vim.cmd.normal { args = { "gg0vG$" }, bang = true } end
@@ -402,33 +401,39 @@ local function window_with_filetype(filetype)
   end
 end
 
-local function real_file_from_codediff_session(diff)
-  if not diff then return nil end
+local function codediff_tab_info(tabpage)
+  local is_codediff = false
+  local real_file
 
-  for _, bufnr in ipairs { diff.modified_bufnr, diff.original_bufnr, diff.result_bufnr } do
-    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+    local bufnr = vim.api.nvim_win_get_buf(win)
+    if vim.api.nvim_buf_is_valid(bufnr) then
       local name = vim.api.nvim_buf_get_name(bufnr)
-      if name ~= "" and vim.bo[bufnr].buftype == "" and vim.fn.filereadable(name) == 1 then return name end
+      local filetype = vim.bo[bufnr].filetype
+      if filetype == "codediff-explorer" or filetype == "codediff-history" or vim.startswith(name, "codediff://") then
+        is_codediff = true
+      elseif not real_file and name ~= "" and vim.bo[bufnr].buftype == "" and vim.fn.filereadable(name) == 1 then
+        real_file = name
+      end
     end
   end
+
+  return is_codediff, real_file
 end
 
 local function cleanup_active_codediff_tabs()
-  local ok_lifecycle, lifecycle = pcall(require, "codediff.ui.lifecycle")
-  local ok_session, session = pcall(require, "codediff.ui.lifecycle.session")
-  if not ok_lifecycle or not ok_session then return true end
-
-  local active_diffs = session.get_active_diffs()
   local diff_tabs = {}
-  for tabpage in pairs(active_diffs) do
-    if vim.api.nvim_tabpage_is_valid(tabpage) then table.insert(diff_tabs, tabpage) end
+  local fallback_file
+  for _, tabpage in ipairs(vim.api.nvim_list_tabpages()) do
+    local is_codediff, tab_file = codediff_tab_info(tabpage)
+    if is_codediff then
+      table.insert(diff_tabs, tabpage)
+      fallback_file = fallback_file or tab_file
+    end
   end
   if #diff_tabs == 0 then return true end
 
-  local all_tabs_are_diffs = #diff_tabs == #vim.api.nvim_list_tabpages()
-  if all_tabs_are_diffs then
-    local current_tab = vim.api.nvim_get_current_tabpage()
-    local fallback_file = real_file_from_codediff_session(active_diffs[current_tab])
+  if #diff_tabs == #vim.api.nvim_list_tabpages() then
     vim.cmd "tabnew"
     if fallback_file then pcall(function() vim.cmd("edit " .. vim.fn.fnameescape(fallback_file)) end) end
   end
@@ -439,7 +444,10 @@ local function cleanup_active_codediff_tabs()
   )
 
   for _, tabpage in ipairs(diff_tabs) do
-    if vim.api.nvim_tabpage_is_valid(tabpage) and not lifecycle.close(tabpage) then return false end
+    if vim.api.nvim_tabpage_is_valid(tabpage) then
+      vim.api.nvim_set_current_tabpage(tabpage)
+      if not pcall(function() vim.cmd "tabclose" end) then return false end
+    end
   end
 
   return true
@@ -655,29 +663,29 @@ function M.rust_remove_unused_imports_this_file()
   vim.notify(("Applied: %s"):format(best.title or "remove unused imports"))
 end
 
-local function store_codediff_continue_position(path)
+function M.open_codediff(args)
+  args = args or {}
+  vim.g.viter_codediff_last_args = vim.deepcopy(args)
+
+  local current_file = vim.api.nvim_buf_get_name(0)
+  local start_path = current_file ~= "" and current_file or (vim.uv.cwd() or vim.fn.getcwd())
+  vim.g.viter_codediff_last_root = vim.fs.root(start_path, ".git")
+
+  vim.api.nvim_cmd({ cmd = "CodeDiff", args = args }, {})
+end
+
+local function store_codediff_position(path)
   if type(path) ~= "string" or path == "" then return end
 
   local cursor = vim.api.nvim_win_get_cursor(0)
-  vim.g.viter_codediff_continue_file = path
+  vim.g.viter_codediff_continue_file = vim.fs.normalize(path)
   vim.g.viter_codediff_continue_line = cursor[1]
   vim.g.viter_codediff_continue_col = cursor[2]
 end
 
-function M.open_codediff(args)
-  args = args or {}
-  vim.g.viter_codediff_last_args = vim.deepcopy(args)
-  vim.api.nvim_cmd({ cmd = "CodeDiff", args = args }, {})
-end
-
 local function active_codediff_tab()
-  local ok_session, session_state = pcall(require, "codediff.ui.lifecycle.session")
-  if not ok_session then return nil end
-
   local tabpage = vim.g.viter_codediff_last_tab
   if type(tabpage) ~= "number" or not vim.api.nvim_tabpage_is_valid(tabpage) then return nil end
-  if not session_state.get_active_diffs()[tabpage] then return nil end
-
   return tabpage
 end
 
@@ -698,7 +706,7 @@ function M.continue_codediff()
 
   local current_file = vim.api.nvim_buf_get_name(0)
   if current_file ~= "" then
-    store_codediff_continue_position(current_file)
+    store_codediff_position(current_file)
     if reopen_last_codediff() then return end
     M.open_codediff()
     return
@@ -719,7 +727,7 @@ function M.continue_codediff()
   end
 
   vim.cmd("edit " .. vim.fn.fnameescape(path))
-  store_codediff_continue_position(path)
+  store_codediff_position(path)
   if reopen_last_codediff() then return end
   M.open_codediff()
 end

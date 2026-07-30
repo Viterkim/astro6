@@ -38,9 +38,11 @@ vim.api.nvim_create_autocmd("BufReadCmd", {
 local os = (vim.uv or vim.loop).os_uname().sysname
 if os == "Linux" then vim.opt.mousescroll = "ver:1,hor:2" end
 
-vim.api.nvim_create_user_command("UpdateAll", function()
-  vim.cmd "AstroUpdate"
-end, { desc = "Update AstroNvim packages" })
+vim.api.nvim_create_user_command(
+  "UpdateAll",
+  function() vim.cmd "AstroUpdate" end,
+  { desc = "Update AstroNvim packages" }
+)
 
 vim.api.nvim_create_user_command("Res", function() require("funcs").restart_with_session() end, {
   desc = "Restart Neovim and restore session",

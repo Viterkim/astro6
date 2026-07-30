@@ -1,18 +1,19 @@
-local eslint_filetypes = {
-  javascript = true,
-  javascriptreact = true,
-  typescript = true,
-  typescriptreact = true,
-}
-
 return {
   "stevearc/conform.nvim",
-  event = { "BufWritePre" },
-  cmd = { "ConformInfo" },
 
   opts = {
+    default_format_opts = {
+      lsp_format = "never",
+      -- 5 sec because work eslint/prettier is slow on cold start
+      timeout_ms = 5000,
+    },
+
     formatters = {
-      -- Use the formatter pinned in each F# repository's dotnet tool manifest.
+      -- work does prettier through eslint
+      eslint_d = {
+        env = { ESLINT_D_MISS = "fail" },
+      },
+
       fantomas = {
         command = "dotnet",
         args = { "fantomas", "$FILENAME" },
@@ -21,14 +22,8 @@ return {
     },
 
     format_on_save = function(bufnr)
-      local filetype = vim.bo[bufnr].filetype
-
-      return {
-        timeout_ms = 5000,
-        -- TS/JS must only use ESLint. Never silently fall back to
-        -- vtsls or another LSP formatter.
-        lsp_format = eslint_filetypes[filetype] and "never" or "fallback",
-      }
+      if not vim.F.if_nil(vim.b[bufnr].autoformat, vim.g.autoformat, true) then return end
+      return { lsp_format = "never" }
     end,
 
     formatters_by_ft = {

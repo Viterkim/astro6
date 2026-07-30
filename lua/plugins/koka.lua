@@ -41,7 +41,7 @@ return {
 
           -- Kill the noisy semantic-token request path.
           client.server_capabilities.semanticTokensProvider = nil
-          pcall(vim.lsp.semantic_tokens.stop, args.buf, client.id)
+          vim.lsp.semantic_tokens.enable(false, { bufnr = args.buf, client_id = client.id })
         end,
       })
 

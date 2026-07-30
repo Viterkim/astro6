@@ -4,7 +4,6 @@ return {
   ---@type AstroCoreOpts
   opts = {
     features = {
-      autoformat = true,
       large_buf = { size = 1024 * 256, lines = 10000 },
       autopairs = true,
       cmp = true,
@@ -36,7 +35,6 @@ return {
       },
       g = {
         autoformat = true,
-        diagnostics_mode = 2,
       },
     },
   },
