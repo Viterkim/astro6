@@ -1,14 +1,4 @@
 local image_globs = require("utils.image_globs").patterns()
-local buffer_utils = require "astrocore.buffer"
-
-local function show_indent_guides(bufnr, winid)
-  local codediff_window = winid and vim.api.nvim_win_is_valid(winid) and vim.w[winid].codediff_restore == 1
-
-  return (buffer_utils.is_valid(bufnr) or codediff_window)
-    and not buffer_utils.is_large(bufnr)
-    and vim.g.snacks_indent ~= false
-    and vim.b[bufnr].snacks_indent ~= false
-end
 
 local picker_excludes = vim.list_extend(vim.deepcopy(image_globs), {
   ".git",
@@ -68,12 +58,6 @@ return {
   end,
   opts = {
     input = { enabled = false },
-
-    indent = {
-      -- CodeDiff intentionally uses unlisted real-file buffers. AstroNvim's
-      -- default filter excludes those, leaving guides on only the virtual pane.
-      filter = show_indent_guides,
-    },
 
     image = {
       enabled = false,

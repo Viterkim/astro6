@@ -13,6 +13,7 @@ return {
         DiagnosticVirtualTextDeprecated = { fg = "#a9b1d6", italic = false, strikethrough = false },
         ["@lsp.mod.unnecessary"] = { fg = "#9aa5ce", italic = false },
         ["@lsp.mod.deprecated"] = { fg = "#a9b1d6", italic = false, strikethrough = false },
+        CodeDiffComment = { fg = "#a9b1d6", italic = true },
       },
       astrodark = {},
     },

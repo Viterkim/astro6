@@ -36,6 +36,36 @@ end
 
 local analyzer_state = {}
 
+local rust_target_scopes = {
+  default = { allTargets = false, extraArgs = { "--no-deps" } },
+  test = { allTargets = false, extraArgs = { "--no-deps", "--tests" } },
+  all = { allTargets = true, extraArgs = { "--no-deps" } },
+}
+
+local function set_rust_target(bufnr, scope)
+  scope = scope == "" and "default" or scope
+  scope = scope == "normal" and "default" or scope
+  scope = scope == "tests" and "test" or scope
+
+  local check = rust_target_scopes[scope]
+  if not check then
+    vim.notify("RustTarget: use default, test, or all", vim.log.levels.ERROR)
+    return
+  end
+
+  local clients = vim.tbl_filter(
+    function(client) return client.name == "rust-analyzer" end,
+    vim.lsp.get_clients { bufnr = bufnr }
+  )
+  if #clients == 0 then
+    vim.notify("RustTarget: rust-analyzer is not attached", vim.log.levels.WARN)
+    return
+  end
+
+  require("rustaceanvim.lsp").set_config(bufnr, { check = vim.deepcopy(check) })
+  vim.notify("Rust target: " .. scope)
+end
+
 local function start_buffer(bufnr)
   if
     vim.api.nvim_buf_is_valid(bufnr)
@@ -135,6 +165,24 @@ return {
       if default_on_attach then default_on_attach(client, bufnr) end
 
       client.server_capabilities.semanticTokensProvider = nil
+
+      if not vim.api.nvim_buf_get_commands(bufnr, {})["RustTarget"] then
+        vim.api.nvim_buf_create_user_command(
+          bufnr,
+          "RustTarget",
+          function(args) set_rust_target(bufnr, args.args) end,
+          {
+            nargs = "?",
+            desc = "Set Clippy target scope",
+            complete = function(lead)
+              return vim.tbl_filter(
+                function(scope) return vim.startswith(scope, lead) end,
+                { "default", "test", "all" }
+              )
+            end,
+          }
+        )
+      end
     end
 
     local default_auto_attach = opts.server.auto_attach

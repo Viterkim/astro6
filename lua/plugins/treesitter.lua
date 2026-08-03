@@ -8,11 +8,14 @@ return {
     opts.treesitter.indent = true
     opts.treesitter.auto_install = false
 
-    local seen = {}
-    opts.treesitter.ensure_installed = vim.tbl_filter(function(parser)
-      if seen[parser] then return false end
-      seen[parser] = true
-      return true
-    end, opts.treesitter.ensure_installed or {})
+    local ensure_installed = opts.treesitter.ensure_installed
+    if type(ensure_installed) == "table" then
+      local seen = {}
+      opts.treesitter.ensure_installed = vim.tbl_filter(function(parser)
+        if seen[parser] then return false end
+        seen[parser] = true
+        return true
+      end, ensure_installed)
+    end
   end,
 }
