@@ -1,6 +1,19 @@
 ---@type LazySpec
 return {
   "AstroNvim/astrocore",
+  init = function()
+    vim.api.nvim_create_autocmd("User", {
+      group = vim.api.nvim_create_augroup("visual_multi_mappings", { clear = true }),
+      pattern = "visual_multi_mappings",
+      callback = function(args)
+        local opts = { buffer = args.buf, remap = true, silent = true, nowait = true }
+
+        vim.keymap.set("n", "<C-n>", "<Plug>(VM-Find-Under)zz", opts)
+        vim.keymap.set("n", "n", "<Plug>(VM-Find-Next)zz", opts)
+        vim.keymap.set("n", "q", "<Plug>(VM-Remove-Last-Region)zz", opts)
+      end,
+    })
+  end,
   opts = {
     mappings = {
       n = {

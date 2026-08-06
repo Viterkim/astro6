@@ -1,6 +1,16 @@
 return {
   "nvim-neo-tree/neo-tree.nvim",
   opts = {
+    -- Saving code shouldn't rescan the whole tree.
+    enable_refresh_on_write = false,
+
+    event_handlers = {
+      {
+        event = "neo_tree_buffer_enter",
+        handler = function() require("neo-tree.sources.manager").refresh "filesystem" end,
+      },
+    },
+
     source_selector = {
       winbar = false,
       statusline = false,

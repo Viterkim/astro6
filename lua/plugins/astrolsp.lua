@@ -12,9 +12,8 @@ return {
       rust_analyzer = {
         settings = {
           ["rust-analyzer"] = {
-            -- Keep Clippy diagnostics on save, but scope them to the package
-            -- containing the saved file. The defaults add --workspace and
-            -- --all-targets, which is very expensive in large workspaces.
+            -- Keep Clippy package-scoped so large workspaces stay usable.
+            checkOnSave = true,
             check = {
               command = "clippy",
               extraArgs = { "--no-deps" },
