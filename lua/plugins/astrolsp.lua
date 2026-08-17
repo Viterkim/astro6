@@ -9,6 +9,20 @@ return {
     },
 
     config = {
+      lua_ls = {
+        settings = {
+          Lua = {
+            runtime = { version = "LuaJIT" },
+            workspace = {
+              checkThirdParty = false,
+              library = {
+                vim.fs.joinpath(vim.env.VIMRUNTIME, "lua"),
+                vim.fs.joinpath(vim.fn.stdpath "data", "lazy", "lazy.nvim", "lua"),
+              },
+            },
+          },
+        },
+      },
       rust_analyzer = {
         settings = {
           ["rust-analyzer"] = {

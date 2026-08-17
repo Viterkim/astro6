@@ -1,3 +1,6 @@
+local is_ssh = vim.env.SSH_TTY or vim.env.SSH_CONNECTION or vim.env.SSH_CLIENT
+local use_osc52 = is_ssh and vim.env.TMUX == nil
+
 ---@type LazySpec
 return {
   "AstroNvim/astrocore",
@@ -23,10 +26,20 @@ return {
           callback = function() vim.cmd "clearjumps" end,
         },
       },
+      ssh_osc52_yank = use_osc52 and {
+        {
+          event = "TextYankPost",
+          callback = function()
+            local ev = vim.v.event
+            if ev.operator == "y" then require("vim.ui.clipboard.osc52").copy "+"(ev.regcontents) end
+          end,
+        },
+      } or nil,
     },
     options = {
       opt = {
-        clipboard = "unnamedplus",
+        -- y goes to the local terminal over SSH; p stays in Vim.
+        clipboard = use_osc52 and "" or "unnamedplus",
         relativenumber = true,
         number = true,
         spell = false,

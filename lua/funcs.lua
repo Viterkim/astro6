@@ -701,6 +701,7 @@ function M.continue_codediff()
   local tabpage = active_codediff_tab()
   if tabpage then
     if vim.api.nvim_get_current_tabpage() ~= tabpage then vim.api.nvim_set_current_tabpage(tabpage) end
+    if vim.w.codediff_restore == 1 then vim.cmd "normal! zz" end
     return
   end
 
