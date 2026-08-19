@@ -33,6 +33,133 @@ return {
   config = function(_, opts)
     require("codediff").setup(opts)
 
+    -- TEMP MONKEY PATCH: CodeDiff does not persist a manually resized explorer
+    -- across hide/show. Remove this when the plugin owns that state publicly.
+    local explorer_module = require "codediff.ui.explorer"
+    local explorer_render = require "codediff.ui.explorer.render"
+    local explorer_actions = require "codediff.ui.explorer.actions"
+    local history_module = require "codediff.ui.history"
+    local history_render = require "codediff.ui.history.render"
+    local lifecycle = require "codediff.ui.lifecycle"
+
+    local function focus_right_diff(tabpage)
+      local original_win, modified_win = lifecycle.get_windows(tabpage)
+      local winid = modified_win and vim.api.nvim_win_is_valid(modified_win) and modified_win or original_win
+      if winid and vim.api.nvim_win_is_valid(winid) then vim.api.nvim_set_current_win(winid) end
+    end
+
+    local toggle_visibility = explorer_actions.toggle_visibility
+    local function toggle_explorer(explorer)
+      local was_hidden = explorer and explorer.is_hidden
+      local split = explorer and explorer.split
+      local winid = split and split.winid
+      if
+        explorer
+        and not explorer.is_hidden
+        and winid
+        and vim.api.nvim_win_is_valid(winid)
+      then
+        local position = opts.explorer.position or "left"
+        split._size = position == "bottom" and vim.api.nvim_win_get_height(winid)
+          or vim.api.nvim_win_get_width(winid)
+      end
+      local result = toggle_visibility(explorer)
+      if was_hidden and explorer.winid and vim.api.nvim_win_is_valid(explorer.winid) then
+        vim.api.nvim_set_current_win(explorer.winid)
+      elseif explorer and explorer.tabpage then
+        focus_right_diff(explorer.tabpage)
+      end
+      return result
+    end
+    explorer_actions.toggle_visibility = toggle_explorer
+    explorer_module.toggle_visibility = toggle_explorer
+
+    -- TEMP MONKEY PATCH: CodeDiff currently creates an ungrouped WinResized
+    -- autocmd for every explorer/history panel and never deletes it. Capture
+    -- only the autocmds created synchronously by each panel's create() and
+    -- remove them on CodeDiffClose. Remove this when upstream puts them in a
+    -- session group.
+    local leaked_resize_autocmds = {}
+    local function capture_resize_autocmds(tabpage, create, ...)
+      local existing = {}
+      for _, autocmd in ipairs(vim.api.nvim_get_autocmds { event = "WinResized" }) do
+        existing[autocmd.id] = true
+      end
+
+      local panel = create(...)
+      if tabpage then
+        leaked_resize_autocmds[tabpage] = leaked_resize_autocmds[tabpage] or {}
+        for _, autocmd in ipairs(vim.api.nvim_get_autocmds { event = "WinResized" }) do
+          if not existing[autocmd.id] and not autocmd.group then
+            table.insert(leaked_resize_autocmds[tabpage], autocmd.id)
+          end
+        end
+      end
+      return panel
+    end
+
+    local create_explorer = explorer_render.create
+    local function create_explorer_with_cleanup(...)
+      local tabpage = select(3, ...)
+      local explorer = capture_resize_autocmds(tabpage, create_explorer, ...)
+      if tabpage then
+        -- TEMP MONKEY PATCH: CodeDiff has no configurable context-specific
+        -- explorer keys. Keep the diff-pane actions, but give the explorer
+        -- familiar navigation and symmetric focus/open behavior.
+        local map_options = { noremap = true, silent = true, nowait = true }
+        local map_meta = { suspendable = false, priority = 100 }
+        lifecycle.set_buf_keymap(
+          tabpage,
+          explorer.bufnr,
+          "n",
+          "n",
+          function() vim.cmd "normal! k" end,
+          vim.tbl_extend("force", map_options, { desc = "CodeDiff: previous explorer entry" }),
+          map_meta
+        )
+        lifecycle.set_buf_keymap(
+          tabpage,
+          explorer.bufnr,
+          "n",
+          "e",
+          function() vim.cmd "normal! j" end,
+          vim.tbl_extend("force", map_options, { desc = "CodeDiff: next explorer entry" }),
+          map_meta
+        )
+        lifecycle.set_buf_keymap(
+          tabpage,
+          explorer.bufnr,
+          "n",
+          "o",
+          function() focus_right_diff(tabpage) end,
+          vim.tbl_extend("force", map_options, { desc = "CodeDiff: focus right diff pane" }),
+          map_meta
+        )
+        lifecycle.set_buf_keymap(
+          tabpage,
+          explorer.bufnr,
+          "n",
+          "i",
+          function()
+            local enter = vim.api.nvim_replace_termcodes("<CR>", true, false, true)
+            vim.api.nvim_feedkeys(enter, "m", false)
+          end,
+          vim.tbl_extend("force", map_options, { desc = "CodeDiff: select/toggle entry" }),
+          map_meta
+        )
+      end
+      return explorer
+    end
+    explorer_render.create = create_explorer_with_cleanup
+    explorer_module.create = create_explorer_with_cleanup
+
+    local create_history = history_render.create
+    local function create_history_with_cleanup(...)
+      return capture_resize_autocmds(select(3, ...), create_history, ...)
+    end
+    history_render.create = create_history_with_cleanup
+    history_module.create = create_history_with_cleanup
+
     local group = vim.api.nvim_create_augroup("viter_codediff", { clear = true })
     local pending = {}
 
@@ -75,6 +202,7 @@ return {
     end
 
     local function refresh_indent_scopes(tabpage)
+      if not tabpage or not vim.api.nvim_tabpage_is_valid(tabpage) then return end
       for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
         if vim.w[win].codediff_restore == 1 then
           vim.api.nvim_win_call(
@@ -88,6 +216,17 @@ return {
           )
         end
       end
+      vim.cmd "redraw"
+    end
+
+    local indent_refresh_scheduled = {}
+    local function schedule_indent_refresh(tabpage)
+      if not tabpage or indent_refresh_scheduled[tabpage] then return end
+      indent_refresh_scheduled[tabpage] = true
+      vim.schedule(function()
+        indent_refresh_scheduled[tabpage] = nil
+        refresh_indent_scopes(tabpage)
+      end)
     end
 
     local function view_ready(tabpage, state)
@@ -111,35 +250,79 @@ return {
 
     local function settle_view(tabpage)
       local state = pending[tabpage]
-      if not state or state.armed or not vim.api.nvim_tabpage_is_valid(tabpage) or not view_ready(tabpage, state) then
+      if not state or state.armed or not vim.api.nvim_tabpage_is_valid(tabpage) then return end
+      if state.follow_request and state.follow_request.timed_out then
+        pending[tabpage] = nil
+        return
+      end
+      if state.follow_request and state.follow_request.deadline <= vim.uv.hrtime() then
+        state.follow_request.timed_out = true
+        require("funcs").finish_codediff_follow(state.follow_request)
+        pending[tabpage] = nil
+        vim.notify("Timed out waiting for CodeDiff after 5 seconds", vim.log.levels.WARN)
+        return
+      end
+      if not view_ready(tabpage, state) then
+        if state.follow_change then vim.defer_fn(function() settle_view(tabpage) end, 10) end
         return
       end
 
+      if state.follow_change then
+        local session = require("codediff.ui.lifecycle").get_session(tabpage)
+        if not session or not session.stored_diff_result or type(session.stored_diff_result.changes) ~= "table" then
+          vim.defer_fn(function() settle_view(tabpage) end, 10)
+          return
+        end
+      end
+
       state.armed = true
-      vim.api.nvim_create_autocmd("SafeState", {
-        group = group,
-        once = true,
-        callback = function()
-          if pending[tabpage] ~= state or not vim.api.nvim_tabpage_is_valid(tabpage) then return end
+      local function restore_position()
+        if pending[tabpage] ~= state or not vim.api.nvim_tabpage_is_valid(tabpage) then return end
 
-          local win = primary_window(tabpage)
-          if not win then return end
+        local win = primary_window(tabpage)
+        if not win then return end
 
-          if state.line then
-            local bufnr = vim.api.nvim_win_get_buf(win)
-            local line = math.max(1, math.min(state.line, vim.api.nvim_buf_line_count(bufnr)))
-            pcall(vim.api.nvim_win_set_cursor, win, { line, state.col or 0 })
-            vim.g.viter_codediff_continue_file = nil
-            vim.g.viter_codediff_continue_line = nil
-            vim.g.viter_codediff_continue_col = nil
+        local line = state.line
+        if state.follow_change and line then
+          local session = require("codediff.ui.lifecycle").get_session(tabpage)
+          local changes = session and session.stored_diff_result and session.stored_diff_result.changes or {}
+          local is_changed_line = false
+          for _, change in ipairs(changes) do
+            local start_line = change.modified.start_line
+            local end_line = change.modified.end_line
+            if (line >= start_line and line < end_line) or (start_line == end_line and line == start_line) then
+              is_changed_line = true
+              break
+            end
           end
+          if not is_changed_line then line = nil end
+        end
 
-          vim.api.nvim_set_current_win(win)
-          vim.cmd "normal! zz"
-          refresh_indent_scopes(tabpage)
-          pending[tabpage] = nil
-        end,
-      })
+        if line then
+          local bufnr = vim.api.nvim_win_get_buf(win)
+          line = math.max(1, math.min(line, vim.api.nvim_buf_line_count(bufnr)))
+          pcall(vim.api.nvim_win_set_cursor, win, { line, state.col or 0 })
+          vim.g.viter_codediff_continue_file = nil
+          vim.g.viter_codediff_continue_line = nil
+          vim.g.viter_codediff_continue_col = nil
+        end
+
+        vim.api.nvim_set_current_win(win)
+        vim.cmd "normal! zz"
+        schedule_indent_refresh(tabpage)
+        if state.follow_request then require("funcs").finish_codediff_follow(state.follow_request) end
+        pending[tabpage] = nil
+      end
+
+      if state.follow_change then
+        vim.schedule(restore_position)
+      else
+        vim.api.nvim_create_autocmd("SafeState", {
+          group = group,
+          once = true,
+          callback = restore_position,
+        })
+      end
     end
 
     vim.api.nvim_create_autocmd("User", {
@@ -150,6 +333,8 @@ return {
         if tabpage then
           vim.g.viter_codediff_last_tab = tabpage
           fix_comment_contrast(tabpage)
+          schedule_indent_refresh(tabpage)
+          vim.schedule(function() require("funcs").select_codediff_follow(tabpage) end)
         end
       end,
     })
@@ -163,16 +348,21 @@ return {
         if data.tabpage then vim.g.viter_codediff_last_tab = data.tabpage end
         if data.path then vim.g.viter_codediff_last_file = data.path end
         fix_comment_contrast(data.tabpage)
+        schedule_indent_refresh(data.tabpage)
 
         local continue_file = vim.g.viter_codediff_continue_file
         local root = vim.g.viter_codediff_last_root
         local selected = root and data.path and vim.fs.normalize(vim.fs.joinpath(root, data.path))
+        local follow = require("funcs").codediff_follow_position(data.tabpage, data.path)
         pending[data.tabpage] = {
           file = selected,
           relative = data.path,
-          line = continue_file and selected == vim.fs.normalize(continue_file) and vim.g.viter_codediff_continue_line
+          line = follow and follow.line
+            or continue_file and selected == vim.fs.normalize(continue_file) and vim.g.viter_codediff_continue_line
             or nil,
           col = vim.g.viter_codediff_continue_col,
+          follow_change = follow ~= nil,
+          follow_request = follow and follow.request,
         }
         settle_view(data.tabpage)
       end,
@@ -184,6 +374,13 @@ return {
       callback = function(args)
         local bufnr = args.data and args.data.buf
         if bufnr then vim.b[bufnr].viter_codediff_loaded = true end
+        if bufnr then
+          for _, win in ipairs(vim.api.nvim_list_wins()) do
+            if vim.api.nvim_win_get_buf(win) == bufnr then
+              schedule_indent_refresh(vim.api.nvim_win_get_tabpage(win))
+            end
+          end
+        end
         for tabpage in pairs(pending) do
           settle_view(tabpage)
         end
@@ -194,6 +391,7 @@ return {
       group = group,
       callback = function()
         local tabpage = vim.api.nvim_get_current_tabpage()
+        if vim.w.codediff_restore == 1 then schedule_indent_refresh(tabpage) end
         if pending[tabpage] then settle_view(tabpage) end
       end,
     })
@@ -231,6 +429,13 @@ return {
       pattern = "CodeDiffClose",
       callback = function(args)
         local tabpage = args.data and args.data.tabpage
+        for _, autocmd in ipairs(tabpage and leaked_resize_autocmds[tabpage] or {}) do
+          pcall(vim.api.nvim_del_autocmd, autocmd)
+        end
+        if tabpage then leaked_resize_autocmds[tabpage] = nil end
+        if tabpage then indent_refresh_scheduled[tabpage] = nil end
+        local state = tabpage and pending[tabpage]
+        if state and state.follow_request then require("funcs").finish_codediff_follow(state.follow_request) end
         if tabpage then pending[tabpage] = nil end
         if vim.g.viter_codediff_last_tab == tabpage then vim.g.viter_codediff_last_tab = nil end
       end,

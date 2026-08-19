@@ -663,15 +663,55 @@ function M.rust_remove_unused_imports_this_file()
   vim.notify(("Applied: %s"):format(best.title or "remove unused imports"))
 end
 
-function M.open_codediff(args)
-  args = args or {}
-  vim.g.viter_codediff_last_args = vim.deepcopy(args)
+function M.scope_codediff_to_cwd(args, expected_root)
+  local scoped_args = vim.deepcopy(args or {})
+  local cwd = vim.fs.normalize(vim.fn.getcwd())
+  local root = cwd and vim.fs.root(cwd, ".git")
+  if not root then return scoped_args end
+
+  root = vim.fs.normalize(root)
+  if expected_root and root ~= vim.fs.normalize(expected_root) then return scoped_args end
+
+  local relative = vim.fs.relpath(root, cwd)
+  if not relative or relative == "." or vim.startswith(relative, "..") then return scoped_args end
+
+  vim.list_extend(scoped_args, { "--", relative })
+  return scoped_args
+end
+
+function M.open_codediff(args, root)
+  args = vim.deepcopy(args or {})
 
   local current_file = vim.api.nvim_buf_get_name(0)
   local start_path = current_file ~= "" and current_file or (vim.uv.cwd() or vim.fn.getcwd())
-  vim.g.viter_codediff_last_root = vim.fs.root(start_path, ".git")
+  root = root or vim.fs.root(start_path, ".git")
+  if root then root = vim.fs.normalize(root) end
+
+  local has_repo = false
+  for _, arg in ipairs(args) do
+    if arg == "--repo" or arg == "-C" or vim.startswith(arg, "--repo=") then
+      has_repo = true
+      break
+    end
+  end
+  if root and not has_repo then args = vim.list_extend({ "--repo", root }, args) end
+
+  -- Keep the comparison and its repository together. Reopening from a buffer
+  -- in another project must not reinterpret revisions in that project.
+  vim.g.viter_codediff_last_args = vim.deepcopy(args)
+  vim.g.viter_codediff_last_root = root
 
   vim.api.nvim_cmd({ cmd = "CodeDiff", args = args }, {})
+end
+
+function M.page_scroll(up)
+  local half_page = math.max(1, math.floor(vim.api.nvim_win_get_height(0) / 2))
+  local amount = vim.v.count > 0 and vim.v.count or half_page
+
+  -- A count on CTRL-U/CTRL-D becomes the persistent 'scroll' value. Honor the
+  -- count for this movement, then restore the uncounted half-page behavior.
+  vim.cmd.normal({ args = { tostring(amount) .. string.char(up and 21 or 4) }, bang = true })
+  vim.wo.scroll = 0
 end
 
 local function store_codediff_position(path)
@@ -693,8 +733,156 @@ local function reopen_last_codediff()
   local args = vim.g.viter_codediff_last_args
   if type(args) ~= "table" then return false end
 
-  M.open_codediff(args)
+  M.open_codediff(args, vim.g.viter_codediff_last_root)
   return true
+end
+
+local codediff_follow_request
+
+local function clear_codediff_follow_request(request)
+  if not request or codediff_follow_request == request then codediff_follow_request = nil end
+end
+
+function M.codediff_follow_position(tabpage, relative_path)
+  local request = codediff_follow_request
+  if not request or type(relative_path) ~= "string" then return end
+
+  local session = require("codediff.ui.lifecycle").get_session(tabpage)
+  local root = session and session.git_root
+  if not root then return end
+
+  local selected = vim.fs.normalize(vim.fs.joinpath(root, relative_path))
+  if selected ~= request.file then return end
+
+  request.applied = true
+  return { line = request.line, request = request }
+end
+
+function M.finish_codediff_follow(request)
+  clear_codediff_follow_request(request)
+end
+
+function M.select_codediff_follow(tabpage)
+  local request = codediff_follow_request
+  if not request or not tabpage or not vim.api.nvim_tabpage_is_valid(tabpage) then return false end
+
+  request.opened = true
+  local lifecycle = require "codediff.ui.lifecycle"
+  local explorer = lifecycle.get_panel_view(tabpage)
+  local session = lifecycle.get_session(tabpage)
+  local root = explorer and explorer.git_root or session and session.git_root
+  if not explorer or not root then return false end
+
+  local relative = vim.fs.relpath(vim.fs.normalize(root), request.file)
+  local target
+  if relative and relative ~= ".." and not vim.startswith(relative, "../") then
+    local files = require("codediff.ui.explorer.refresh").get_all_files(explorer.tree)
+    for _, file in ipairs(files) do
+      if vim.fs.normalize(file.data.path) == vim.fs.normalize(relative) then
+        target = file
+        break
+      end
+    end
+  end
+
+  if not target then
+    clear_codediff_follow_request(request)
+    if request.opening then
+      lifecycle.close(tabpage)
+      if request.source_tab and vim.api.nvim_tabpage_is_valid(request.source_tab) then
+        vim.api.nvim_set_current_tabpage(request.source_tab)
+      end
+    end
+    vim.notify("File has no changes", vim.log.levels.INFO)
+    return false
+  end
+
+  vim.api.nvim_set_current_tabpage(tabpage)
+  if request.applied and explorer.current_file_path == target.data.path then return true end
+
+  if explorer.winid and vim.api.nvim_win_is_valid(explorer.winid) and target.node and target.node._line then
+    vim.api.nvim_win_set_cursor(explorer.winid, { target.node._line, 0 })
+  end
+  explorer.on_file_select(target.data)
+  return true
+end
+
+local function new_codediff_follow_request()
+  local current_file = vim.api.nvim_buf_get_name(0)
+  if current_file == "" then
+    vim.notify("Current buffer has no file", vim.log.levels.INFO)
+    return nil
+  end
+
+  local request = {
+    file = vim.fs.normalize(current_file),
+    line = vim.api.nvim_win_get_cursor(0)[1],
+    source_tab = vim.api.nvim_get_current_tabpage(),
+    deadline = vim.uv.hrtime() + 5e9,
+  }
+  codediff_follow_request = request
+  return request
+end
+
+local function expire_codediff_follow_request(request)
+  vim.defer_fn(function()
+    if codediff_follow_request == request then
+      request.timed_out = true
+      clear_codediff_follow_request(request)
+      vim.notify("Timed out waiting for CodeDiff after 5 seconds", vim.log.levels.WARN)
+    end
+  end, 5000)
+end
+
+function M.follow_codediff()
+  local request = new_codediff_follow_request()
+  if not request then return end
+
+  local tabpage = active_codediff_tab()
+  if tabpage then
+    M.select_codediff_follow(tabpage)
+    return
+  end
+
+  request.opening = true
+  if not reopen_last_codediff() then M.open_codediff() end
+  expire_codediff_follow_request(request)
+end
+
+function M.open_codediff_main()
+  local current_file = vim.api.nvim_buf_get_name(0)
+  local start_path = current_file ~= "" and current_file or vim.fn.getcwd()
+  local root = vim.fs.root(start_path, ".git")
+  if not root then
+    vim.notify("Not in a Git repository", vim.log.levels.INFO)
+    return
+  end
+
+  local candidates = {
+    { name = "main", ref = "refs/heads/main" },
+    { name = "origin/main", ref = "refs/remotes/origin/main" },
+    { name = "master", ref = "refs/heads/master" },
+    { name = "origin/master", ref = "refs/remotes/origin/master" },
+  }
+  local mainline
+  for _, candidate in ipairs(candidates) do
+    local result = vim.system(
+      { "git", "-C", root, "rev-parse", "--verify", "--quiet", candidate.ref .. "^{commit}" },
+      { text = true }
+    ):wait()
+    if result.code == 0 then
+      mainline = candidate.name
+      break
+    end
+  end
+
+  if not mainline then
+    vim.notify("No main or master branch found", vim.log.levels.INFO)
+    return
+  end
+
+  local args = M.scope_codediff_to_cwd({ "--repo", root, mainline .. "..." }, root)
+  M.open_codediff(args, root)
 end
 
 function M.continue_codediff()

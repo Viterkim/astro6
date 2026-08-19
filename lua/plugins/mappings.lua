@@ -33,8 +33,8 @@ return {
           desc = "Jump Forward",
         },
         ["l"] = { "o<esc>", desc = "New Line Below" },
-        ["r"] = { "<C-u>", desc = "Page Up" },
-        ["s"] = { "<C-d>", desc = "Page Down" },
+        ["r"] = { function() require("funcs").page_scroll(true) end, desc = "Page Up" },
+        ["s"] = { function() require("funcs").page_scroll(false) end, desc = "Page Down" },
         ["S"] = { function() require("astrocore.buffer").nav(vim.v.count1) end, desc = "Next buffer" },
         ["R"] = { function() require("astrocore.buffer").nav(-vim.v.count1) end, desc = "Prev buffer" },
         ["]b"] = { function() require("astrocore.buffer").nav(vim.v.count1) end, desc = "Next buffer" },
@@ -159,14 +159,29 @@ return {
           function() require("funcs").continue_codediff() end,
           desc = "Open or continue CodeDiff",
         },
+        ["<leader>rw"] = {
+          function() require("funcs").follow_codediff() end,
+          desc = "Follow current file into CodeDiff",
+        },
+        ["<leader>rm"] = {
+          function() require("funcs").open_codediff_main() end,
+          desc = "Branch against main/master",
+        },
         ["<leader>rc"] = {
           function()
             require("snacks").picker.git_log {
+              cmd_args = { "--pretty=format:%H %s (%ch) <%an>" },
               confirm = function(picker, item)
                 picker:close()
                 if not item or not item.commit then return end
 
-                vim.schedule(function() require("funcs").open_codediff { item.commit .. "^", item.commit } end)
+                vim.schedule(function()
+                  local funcs = require "funcs"
+                  local root = item.cwd and vim.fs.normalize(item.cwd)
+                  local args = { item.commit .. "^", item.commit }
+                  if root then args = funcs.scope_codediff_to_cwd(args, root) end
+                  funcs.open_codediff(args, root)
+                end)
               end,
             }
           end,
@@ -179,12 +194,19 @@ return {
         ["<leader>rg"] = {
           function()
             require("snacks").picker.git_log {
+              cmd_args = { "--pretty=format:%H %s (%ch) <%an>" },
               layout = "git_compare",
               confirm = function(picker, item)
                 picker:close()
                 if not item or not item.commit then return end
 
-                vim.schedule(function() require("funcs").open_codediff { item.commit } end)
+                vim.schedule(function()
+                  local funcs = require "funcs"
+                  local root = item.cwd and vim.fs.normalize(item.cwd)
+                  local args = { item.commit }
+                  if root then args = funcs.scope_codediff_to_cwd(args, root) end
+                  funcs.open_codediff(args, root)
+                end)
               end,
             }
           end,
@@ -204,6 +226,8 @@ return {
             vim.ui.select({
               "── Open views ───────────────────────────────────",
               "<Leader>rr   Open or continue CodeDiff",
+              "<Leader>rw   Open current file at its change",
+              "<Leader>rm   Compare branch with main/master",
               "<Leader>rc   Choose a commit and show only that commit diff",
               "<Leader>ro   Preview current file changes",
               "<Leader>rt   Browse staged, unstaged, or conflict changes",
@@ -213,15 +237,17 @@ return {
               "",
               "── Inside CodeDiff ──────────────────────────────",
               "<Up>/<Down>  Browse files and update the diff",
+              "n / e (side) Move up / down the sidebar",
               "<Enter>      Open selected commit or file",
-              "o            Focus CodeDiff sidebar",
-              "y            Toggle CodeDiff sidebar",
+              "o            Switch between sidebar / right diff",
+              "y            Show and focus / hide sidebar",
+              "i (sidebar)  Same as <Enter>",
               "H / h        Move left / right between windows",
               "k / K        Move down / up between windows",
               "j / J        Jump back / forward",
-              "e / n        Next / previous change across files",
+              "e / n (diff) Next / previous change across files",
               "u / l        Next / previous changed file",
-              "i            Open real file and close CodeDiff",
+              "i (diff)     Open real file and close CodeDiff",
               "gt / gT      Switch between editor and CodeDiff",
               "t            Toggle side-by-side / inline view",
               "gc           Toggle compact unchanged sections",
