@@ -51,10 +51,52 @@ return {
 
     mappings = {
       n = {
+        -- Override Astro default.
         gD = {
-          function() vim.lsp.buf.declaration() end,
+          function() require("funcs").centered_lsp_picker "lsp_declarations" end,
           desc = "Declaration of current symbol",
           cond = "textDocument/declaration",
+        },
+        -- Override Astro default.
+        gd = {
+          function() require("funcs").centered_lsp_picker "lsp_definitions" end,
+          desc = "Show the definition of current symbol",
+          cond = "textDocument/definition",
+        },
+        -- Override Astro default.
+        gy = {
+          function() require("funcs").centered_lsp_picker "lsp_type_definitions" end,
+          desc = "Definition of current type",
+          cond = "textDocument/typeDefinition",
+        },
+        gI = {
+          function() require("funcs").centered_lsp_picker "lsp_implementations" end,
+          desc = "Implementation of current symbol",
+          cond = "textDocument/implementation",
+        },
+        -- Override Neovim default.
+        gri = {
+          function() require("funcs").centered_lsp_picker "lsp_implementations" end,
+          desc = "Implementation of current symbol",
+          cond = "textDocument/implementation",
+        },
+        -- Override Neovim default.
+        grt = {
+          function() require("funcs").centered_lsp_picker "lsp_type_definitions" end,
+          desc = "Definition of current type",
+          cond = "textDocument/typeDefinition",
+        },
+        -- Override Neovim default.
+        grr = {
+          function() require("funcs").centered_lsp_picker "lsp_references" end,
+          desc = "Show references",
+          cond = "textDocument/references",
+        },
+        -- Override Astro default.
+        ["<Leader>lR"] = {
+          function() require("funcs").centered_lsp_picker "lsp_references" end,
+          desc = "Search references",
+          cond = "textDocument/references",
         },
       },
     },

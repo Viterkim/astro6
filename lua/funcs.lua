@@ -78,6 +78,22 @@ function M.get_visual_one_line()
   return vim.trim(text)
 end
 
+function M.centered_lsp_picker(source)
+  require("snacks").picker[source] {
+    confirm = function(picker, item, action)
+      require("snacks.picker.actions").jump(picker, item, action)
+      -- Snacks finishes its auto-confirm asynchronously, and can restore the
+      -- main view after the jump. Center after that teardown has settled.
+      vim.defer_fn(function()
+        local win = vim.api.nvim_get_current_win()
+        if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_config(win).relative == "" then
+          vim.api.nvim_win_call(win, function() vim.cmd "normal! zz" end)
+        end
+      end, 100)
+    end,
+  }
+end
+
 function M.save_session_and_quit()
   local resession = require "resession"
   local cwd = vim.uv.cwd() or vim.fn.getcwd()

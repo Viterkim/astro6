@@ -47,10 +47,29 @@ return {
           end,
           desc = "Close buffer from tabline",
         },
-        ["gd"] = { function() vim.lsp.buf.definition() end, desc = "LSP Definition" },
-        ["gy"] = { function() vim.lsp.buf.type_definition() end, desc = "LSP Type Definition" },
-        ["grr"] = { function() require("snacks").picker.lsp_references() end, desc = "Show References" },
-        ["gI"] = { function() vim.lsp.buf.implementation() end, desc = "LSP Implementation" },
+        -- Override Astro default.
+        ["gd"] = { function() require("funcs").centered_lsp_picker "lsp_definitions" end, desc = "LSP Definition" },
+        -- Override Astro default.
+        ["gy"] = {
+          function() require("funcs").centered_lsp_picker "lsp_type_definitions" end,
+          desc = "LSP Type Definition",
+        },
+        -- Override Neovim default.
+        ["grr"] = { function() require("funcs").centered_lsp_picker "lsp_references" end, desc = "Show References" },
+        ["gI"] = {
+          function() require("funcs").centered_lsp_picker "lsp_implementations" end,
+          desc = "LSP Implementation",
+        },
+        -- Override Neovim default.
+        ["gri"] = {
+          function() require("funcs").centered_lsp_picker "lsp_implementations" end,
+          desc = "LSP Implementation",
+        },
+        -- Override Neovim default.
+        ["grt"] = {
+          function() require("funcs").centered_lsp_picker "lsp_type_definitions" end,
+          desc = "LSP Type Definition",
+        },
         ["ø"] = { function() vim.lsp.buf.hover() end, desc = "Hover symbol details" },
 
         -- leader F (search, literal, simple)
@@ -71,6 +90,12 @@ return {
         -- leader k
         ["<leader>k"] = { desc = "Own k" },
         ["<leader>kc"] = {
+          function() require("funcs").close_hidden_file_buffers() end,
+          desc = "Close hidden buffers",
+        },
+
+        -- Override Astro default.
+        ["<Leader>bc"] = {
           function() require("funcs").close_hidden_file_buffers() end,
           desc = "Close hidden buffers",
         },
@@ -133,7 +158,10 @@ return {
           desc = "Copy diagnostics",
         },
         ["<leader>ii"] = { function() require("snacks").picker.diagnostics() end, desc = "All diagnostics" },
-        ["<leader>ir"] = { function() require("snacks").picker.lsp_references() end, desc = "Show References" },
+        ["<leader>ir"] = {
+          function() require("funcs").centered_lsp_picker "lsp_references" end,
+          desc = "Show References",
+        },
         ["<leader>ff"] = { function() require("snacks").picker.files() end, desc = "Find Files" },
         ["<leader>fw"] = { function() require("snacks").picker.grep() end, desc = "Find Words" },
         ["<leader>iy"] = { "<cmd>let @+=expand('%:~:.')<cr>", desc = "Copy relative path" },
