@@ -11,7 +11,7 @@ return {
     explorer = {
       initial_focus = "modified",
       focus_on_select = true,
-      untracked = "normal",
+      untracked = "all",
     },
     keymaps = {
       view = {
@@ -41,6 +41,96 @@ return {
     local history_module = require "codediff.ui.history"
     local history_render = require "codediff.ui.history.render"
     local lifecycle = require "codediff.ui.lifecycle"
+    local codediff_config = require "codediff.config"
+
+    -- TEMP MONKEY PATCH: CodeDiff can report a deletion at EOF one line past
+    -- the shorter pane. Direct next-hunk moves then retry the unreachable line
+    -- forever, while cross-file backward moves fail to land on the last hunk.
+    -- Clamp both direct navigation and renderer landings to real buffer lines.
+    local navigation = require "codediff.ui.view.navigation"
+    local view_render = require "codediff.ui.view.render"
+    local establish_scrollbind = view_render.establish_scrollbind
+    local function clamp_cursor(winid, cursor)
+      if not cursor or not winid or not vim.api.nvim_win_is_valid(winid) then return cursor end
+      local line_count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(winid))
+      return { math.max(1, math.min(cursor[1], line_count)), cursor[2] }
+    end
+    view_render.establish_scrollbind = function(
+      original_win,
+      modified_win,
+      original_buf,
+      modified_buf,
+      lines_diff,
+      original_cursor,
+      modified_cursor
+    )
+      return establish_scrollbind(
+        original_win,
+        modified_win,
+        original_buf,
+        modified_buf,
+        lines_diff,
+        clamp_cursor(original_win, original_cursor),
+        clamp_cursor(modified_win, modified_cursor)
+      )
+    end
+
+    local next_hunk = navigation.next_hunk
+    navigation.next_hunk = function()
+      local tabpage = vim.api.nvim_get_current_tabpage()
+      local session = lifecycle.get_session(tabpage)
+      local changes = session and session.stored_diff_result and session.stored_diff_result.changes
+      if type(changes) ~= "table" or #changes == 0 then return next_hunk() end
+
+      local current_buf = vim.api.nvim_get_current_buf()
+      local is_original = session.layout ~= "inline" and current_buf == session.original_bufnr
+      local is_modified = current_buf == session.modified_bufnr
+        or session.result_bufnr and current_buf == session.result_bufnr
+      if not is_original and not is_modified then return next_hunk() end
+
+      local current_line = vim.api.nvim_win_get_cursor(0)[1]
+      local line_count = vim.api.nvim_buf_line_count(current_buf)
+      for index, change in ipairs(changes) do
+        local target_line = is_original and change.original.start_line or change.modified.start_line
+        if target_line > current_line then
+          if target_line <= line_count then break end
+
+          if current_line < line_count then
+            vim.api.nvim_win_set_cursor(0, { line_count, 0 })
+            vim.cmd "normal! zz"
+            vim.api.nvim_echo({ { ("Hunk %d of %d"):format(index, #changes), "None" } }, false, {})
+            return true
+          end
+
+          if opts.diff.cycle_hunks_across_files then
+            session.pending_cursor_landing = "first"
+            return navigation.next_file()
+          end
+          break
+        end
+      end
+
+      return next_hunk()
+    end
+
+    -- Inline rendering keeps its cursor helper private, so carry the same
+    -- landing intent through CodeDiffFileSelect and clamp it after rendering.
+    local next_file = navigation.next_file
+    navigation.next_file = function()
+      local session = lifecycle.get_session(vim.api.nvim_get_current_tabpage())
+      if session and session.pending_cursor_landing then
+        session.viter_pending_cursor_landing = session.pending_cursor_landing
+      end
+      return next_file()
+    end
+    local prev_file = navigation.prev_file
+    navigation.prev_file = function()
+      local session = lifecycle.get_session(vim.api.nvim_get_current_tabpage())
+      if session and session.pending_cursor_landing then
+        session.viter_pending_cursor_landing = session.pending_cursor_landing
+      end
+      return prev_file()
+    end
 
     local function focus_right_diff(tabpage)
       local original_win, modified_win = lifecycle.get_windows(tabpage)
@@ -60,8 +150,10 @@ return {
         and vim.api.nvim_win_is_valid(winid)
       then
         local position = opts.explorer.position or "left"
-        split._size = position == "bottom" and vim.api.nvim_win_get_height(winid)
+        local size = position == "bottom" and vim.api.nvim_win_get_height(winid)
           or vim.api.nvim_win_get_width(winid)
+        split._size = size
+        codediff_config.options.explorer[position == "bottom" and "height" or "width"] = size
       end
       local result = toggle_visibility(explorer)
       if was_hidden and explorer.winid and vim.api.nvim_win_is_valid(explorer.winid) then
@@ -230,6 +322,13 @@ return {
     end
 
     local function view_ready(tabpage, state)
+      local session = lifecycle.get_session(tabpage)
+      if session and session.layout == "inline" and session.stored_diff_result then
+        local original = session.original and session.original.relative
+        local modified = session.modified and session.modified.relative
+        if original == state.relative or modified == state.relative then return true end
+      end
+
       local selected = false
       for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
         if vim.w[win].codediff_restore == 1 then
@@ -263,7 +362,7 @@ return {
         return
       end
       if not view_ready(tabpage, state) then
-        if state.follow_change then vim.defer_fn(function() settle_view(tabpage) end, 10) end
+        if state.follow_change or state.cursor_landing then vim.defer_fn(function() settle_view(tabpage) end, 10) end
         return
       end
 
@@ -283,6 +382,16 @@ return {
         if not win then return end
 
         local line = state.line
+        if state.cursor_landing then
+          local session = require("codediff.ui.lifecycle").get_session(tabpage)
+          local changes = session and session.stored_diff_result and session.stored_diff_result.changes or {}
+          local hunk = state.cursor_landing == "last" and changes[#changes] or changes[1]
+          if hunk then
+            local bufnr = vim.api.nvim_win_get_buf(win)
+            local is_original = session.layout ~= "inline" and bufnr == session.original_bufnr
+            line = is_original and hunk.original.start_line or hunk.modified.start_line
+          end
+        end
         if state.follow_change and line then
           local session = require("codediff.ui.lifecycle").get_session(tabpage)
           local changes = session and session.stored_diff_result and session.stored_diff_result.changes or {}
@@ -354,6 +463,9 @@ return {
         local root = vim.g.viter_codediff_last_root
         local selected = root and data.path and vim.fs.normalize(vim.fs.joinpath(root, data.path))
         local follow = require("funcs").codediff_follow_position(data.tabpage, data.path)
+        local session = require("codediff.ui.lifecycle").get_session(data.tabpage)
+        local cursor_landing = session and session.viter_pending_cursor_landing
+        if session then session.viter_pending_cursor_landing = nil end
         pending[data.tabpage] = {
           file = selected,
           relative = data.path,
@@ -363,6 +475,7 @@ return {
           col = vim.g.viter_codediff_continue_col,
           follow_change = follow ~= nil,
           follow_request = follow and follow.request,
+          cursor_landing = cursor_landing,
         }
         settle_view(data.tabpage)
       end,

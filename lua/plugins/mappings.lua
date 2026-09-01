@@ -72,15 +72,15 @@ return {
         },
         ["ø"] = { function() vim.lsp.buf.hover() end, desc = "Hover symbol details" },
 
-        -- leader F (search, literal, simple)
-        ["<leader>F"] = { desc = "Literal search" },
+        -- leader F (alternate search behavior)
+        ["<leader>F"] = { desc = "Alternate search" },
         ["<leader>Ff"] = {
           function() require("snacks").picker.files() end,
           desc = "Find in file names",
         },
         ["<leader>Fw"] = {
-          function() require("snacks").picker.grep { regex = false } end,
-          desc = "Find words in files literally",
+          function() require("snacks").picker.grep() end,
+          desc = "Find words with regex",
         },
         ["<leader>Fc"] = {
           function() require("snacks").picker.grep_word { regex = false } end,
@@ -162,8 +162,13 @@ return {
           function() require("funcs").centered_lsp_picker "lsp_references" end,
           desc = "Show References",
         },
-        ["<leader>ff"] = { function() require("snacks").picker.files() end, desc = "Find Files" },
-        ["<leader>fw"] = { function() require("snacks").picker.grep() end, desc = "Find Words" },
+        -- Override Astro default.
+        ["<Leader>ff"] = { function() require("snacks").picker.files() end, desc = "Find Files" },
+        -- Override Astro default.
+        ["<Leader>fw"] = {
+          function() require("snacks").picker.grep { regex = false } end,
+          desc = "Find Words Literally",
+        },
         ["<leader>iy"] = { "<cmd>let @+=expand('%:~:.')<cr>", desc = "Copy relative path" },
         ["<leader>ix"] = { "<cmd>e ++ff=unix<cr>", desc = "Fix windows endlines" },
         ["<leader>ib"] = { "<cmd>RustLsp debug<cr>", desc = "Debug Function" },
