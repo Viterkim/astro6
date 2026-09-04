@@ -48,9 +48,7 @@ local function configure_neotest(_, opts)
         if ok then return positions end
 
         local message = tostring(positions)
-        if message:find("neotest/lib/positions/init.lua", 1, true)
-          and message:find("assertion failed", 1, true)
-        then
+        if message:find("neotest/lib/positions/init.lua", 1, true) and message:find("assertion failed", 1, true) then
           return nil
         end
         error(positions, 0)

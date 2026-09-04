@@ -6,6 +6,10 @@ return {
   opts = {
     handlers = {
       stylua = false,
+      -- TEMP MONKEY PATCH: Taplo 0.10 rejects SchemaStore's current catalog
+      -- before client settings can disable it. TOML formatting still uses the
+      -- Taplo CLI; re-enable the LSP when upstream accepts the catalog again.
+      taplo = false,
     },
 
     config = {
@@ -26,6 +30,9 @@ return {
       rust_analyzer = {
         settings = {
           ["rust-analyzer"] = {
+            -- Override rust-analyzer default: analyze files on demand instead
+            -- of warming the entire workspace on every server start.
+            cachePriming = { enable = false },
             -- Keep Clippy package-scoped so large workspaces stay usable.
             checkOnSave = true,
             check = {
@@ -40,12 +47,12 @@ return {
     },
 
     features = {
+      -- Override Astro default.
       codelens = false,
-      inlay_hints = false,
-      semantic_tokens = true,
     },
 
     formatting = {
+      -- Override Astro default; Conform owns formatting.
       disabled = true,
     },
 
@@ -69,6 +76,7 @@ return {
           desc = "Definition of current type",
           cond = "textDocument/typeDefinition",
         },
+        -- Additional alias; Astro does not define gI.
         gI = {
           function() require("funcs").centered_lsp_picker "lsp_implementations" end,
           desc = "Implementation of current symbol",

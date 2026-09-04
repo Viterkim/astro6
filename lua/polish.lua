@@ -35,7 +35,7 @@ vim.api.nvim_create_autocmd("BufReadCmd", {
   end,
 })
 
-local os = (vim.uv or vim.loop).os_uname().sysname
+local os = vim.uv.os_uname().sysname
 if os == "Linux" then vim.opt.mousescroll = "ver:1,hor:2" end
 
 vim.api.nvim_create_user_command(

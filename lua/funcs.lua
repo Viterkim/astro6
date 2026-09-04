@@ -1,5 +1,6 @@
 local M = {}
 
+-- General UI and navigation helpers.
 local function safe_cmd(cmd)
   pcall(function() vim.cmd(cmd) end)
 end
@@ -80,6 +81,9 @@ end
 
 function M.centered_lsp_picker(source)
   require("snacks").picker[source] {
+    -- Results still appear immediately, but do not show an empty picker while
+    -- a language server is busy answering the request.
+    show_delay = math.huge,
     confirm = function(picker, item, action)
       require("snacks.picker.actions").jump(picker, item, action)
       -- Snacks finishes its auto-confirm asynchronously, and can restore the
@@ -94,6 +98,92 @@ function M.centered_lsp_picker(source)
   }
 end
 
+local function markdown_heading_slug(heading)
+  return heading
+    :lower()
+    :gsub("`", "")
+    :gsub("[^%w%s_-]", "")
+    :gsub("[%s_]+", "-")
+    :gsub("%-+", "-")
+    :gsub("^%-", "")
+    :gsub("%-$", "")
+end
+
+local function jump_to_markdown_fragment(fragment)
+  if not fragment or fragment == "" then return end
+
+  local line_number = fragment:match "^[Ll](%d+)$"
+  if line_number then
+    local requested_line = tonumber(line_number)
+    if not requested_line then return end
+    local last_line = vim.api.nvim_buf_line_count(0)
+    vim.api.nvim_win_set_cursor(0, { math.min(requested_line, last_line), 0 })
+    return
+  end
+
+  fragment = vim.uri_decode(fragment)
+  for heading_line, line in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
+    local heading = line:match "^%s*#+%s+(.+)$"
+    if heading and markdown_heading_slug(heading:gsub("%s+#+%s*$", "")) == fragment:lower() then
+      vim.api.nvim_win_set_cursor(0, { heading_line, 0 })
+      return
+    end
+  end
+end
+
+function M.open_markdown_link()
+  local line = vim.api.nvim_get_current_line()
+  local cursor = vim.api.nvim_win_get_cursor(0)[2] + 1
+  local links = {}
+  local selected
+
+  for start_index, target, end_index in line:gmatch "()%b[]%((.-)%)()" do
+    local link = { start_index = start_index, end_index = end_index, target = vim.trim(target) }
+    links[#links + 1] = link
+    if cursor >= start_index and cursor < end_index then selected = link end
+  end
+
+  if not selected and #links == 1 then selected = links[1] end
+  if not selected then
+    vim.notify("Put the cursor on a Markdown link", vim.log.levels.INFO)
+    return
+  end
+
+  local target = selected.target
+  if target:match "^<.*>$" then target = target:sub(2, -2) end
+
+  if target:match "^%a[%w+.-]*:" then
+    vim.ui.open(target)
+    return
+  end
+
+  local path, fragment = target:match "^(.-)#(.*)$"
+  if not path then path = target end
+
+  if path == "" then
+    path = vim.api.nvim_buf_get_name(0)
+  else
+    path = vim.uri_decode(path)
+    if path:sub(1, 1) == "~" then
+      path = vim.fn.expand(path)
+    elseif not vim.startswith(path, "/") then
+      local current_file = vim.api.nvim_buf_get_name(0)
+      local base = current_file ~= "" and vim.fs.dirname(current_file) or vim.uv.cwd()
+      path = vim.fs.joinpath(base, path)
+    end
+    path = vim.fs.normalize(path)
+  end
+
+  if not path or vim.uv.fs_stat(path) == nil then
+    vim.notify("Markdown link does not exist: " .. selected.target, vim.log.levels.ERROR)
+    return
+  end
+
+  vim.cmd.edit(vim.fn.fnameescape(path))
+  jump_to_markdown_fragment(fragment)
+end
+
+-- Buffer and file lifecycle helpers.
 function M.save_session_and_quit()
   local resession = require "resession"
   local cwd = vim.uv.cwd() or vim.fn.getcwd()
@@ -241,6 +331,7 @@ function M.strip_trailing_whitespace_current_buffer()
   vim.notify "Trailing whitespace removed"
 end
 
+-- Rust code-action helpers.
 local function looks_like_match_arms_action(action)
   local title = (action.title or ""):lower()
   return title:find("fill match arms", 1, true) ~= nil
@@ -369,6 +460,7 @@ function M.rust_fill_match_arms_smart()
   replace_generated_todos_with_braces(open_pos)
 end
 
+-- Selection and register helpers.
 function M.select_whole_file() vim.cmd.normal { args = { "gg0vG$" }, bang = true } end
 
 local function visual_paste_restore_reg()
@@ -400,6 +492,7 @@ function M.visual_paste_keep_regs(cmd)
   return cmd
 end
 
+-- Restart-session helpers.
 local function restart_session_file()
   local dir = vim.fn.stdpath "state" .. "/restart-session"
   vim.fn.mkdir(dir, "p")
@@ -534,6 +627,7 @@ function M.restart_with_session()
   vim.cmd("restart source " .. vim.fn.fnameescape(file))
 end
 
+-- Rust unused-import cleanup.
 function M.rust_remove_unused_imports_this_file()
   if vim.bo.filetype ~= "rust" then return end
 
@@ -679,6 +773,7 @@ function M.rust_remove_unused_imports_this_file()
   vim.notify(("Applied: %s"):format(best.title or "remove unused imports"))
 end
 
+-- CodeDiff entry points and follow-state helpers.
 function M.scope_codediff_to_cwd(args, expected_root)
   local scoped_args = vim.deepcopy(args or {})
   local cwd = vim.fs.normalize(vim.fn.getcwd())
@@ -726,7 +821,7 @@ function M.page_scroll(up)
 
   -- A count on CTRL-U/CTRL-D becomes the persistent 'scroll' value. Honor the
   -- count for this movement, then restore the uncounted half-page behavior.
-  vim.cmd.normal({ args = { tostring(amount) .. string.char(up and 21 or 4) }, bang = true })
+  vim.cmd.normal { args = { tostring(amount) .. string.char(up and 21 or 4) }, bang = true }
   vim.wo.scroll = 0
 end
 
@@ -774,9 +869,7 @@ function M.codediff_follow_position(tabpage, relative_path)
   return { line = request.line, request = request }
 end
 
-function M.finish_codediff_follow(request)
-  clear_codediff_follow_request(request)
-end
+function M.finish_codediff_follow(request) clear_codediff_follow_request(request) end
 
 function M.select_codediff_follow(tabpage)
   local request = codediff_follow_request
@@ -882,10 +975,9 @@ function M.open_codediff_main()
   }
   local mainline
   for _, candidate in ipairs(candidates) do
-    local result = vim.system(
-      { "git", "-C", root, "rev-parse", "--verify", "--quiet", candidate.ref .. "^{commit}" },
-      { text = true }
-    ):wait()
+    local result = vim
+      .system({ "git", "-C", root, "rev-parse", "--verify", "--quiet", candidate.ref .. "^{commit}" }, { text = true })
+      :wait()
     if result.code == 0 then
       mainline = candidate.name
       break
