@@ -1,5 +1,6 @@
 local M = {}
 
+-- General UI and navigation helpers.
 local function safe_cmd(cmd)
   pcall(function() vim.cmd(cmd) end)
 end
@@ -80,6 +81,9 @@ end
 
 function M.centered_lsp_picker(source)
   require("snacks").picker[source] {
+    -- Results still appear immediately, but do not show an empty picker while
+    -- a language server is busy answering the request.
+    show_delay = math.huge,
     confirm = function(picker, item, action)
       require("snacks.picker.actions").jump(picker, item, action)
       -- Snacks finishes its auto-confirm asynchronously, and can restore the
@@ -94,6 +98,92 @@ function M.centered_lsp_picker(source)
   }
 end
 
+local function markdown_heading_slug(heading)
+  return heading
+    :lower()
+    :gsub("`", "")
+    :gsub("[^%w%s_-]", "")
+    :gsub("[%s_]+", "-")
+    :gsub("%-+", "-")
+    :gsub("^%-", "")
+    :gsub("%-$", "")
+end
+
+local function jump_to_markdown_fragment(fragment)
+  if not fragment or fragment == "" then return end
+
+  local line_number = fragment:match "^[Ll](%d+)$"
+  if line_number then
+    local requested_line = tonumber(line_number)
+    if not requested_line then return end
+    local last_line = vim.api.nvim_buf_line_count(0)
+    vim.api.nvim_win_set_cursor(0, { math.min(requested_line, last_line), 0 })
+    return
+  end
+
+  fragment = vim.uri_decode(fragment)
+  for heading_line, line in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
+    local heading = line:match "^%s*#+%s+(.+)$"
+    if heading and markdown_heading_slug(heading:gsub("%s+#+%s*$", "")) == fragment:lower() then
+      vim.api.nvim_win_set_cursor(0, { heading_line, 0 })
+      return
+    end
+  end
+end
+
+function M.open_markdown_link()
+  local line = vim.api.nvim_get_current_line()
+  local cursor = vim.api.nvim_win_get_cursor(0)[2] + 1
+  local links = {}
+  local selected
+
+  for start_index, target, end_index in line:gmatch "()%b[]%((.-)%)()" do
+    local link = { start_index = start_index, end_index = end_index, target = vim.trim(target) }
+    links[#links + 1] = link
+    if cursor >= start_index and cursor < end_index then selected = link end
+  end
+
+  if not selected and #links == 1 then selected = links[1] end
+  if not selected then
+    vim.notify("Put the cursor on a Markdown link", vim.log.levels.INFO)
+    return
+  end
+
+  local target = selected.target
+  if target:match "^<.*>$" then target = target:sub(2, -2) end
+
+  if target:match "^%a[%w+.-]*:" then
+    vim.ui.open(target)
+    return
+  end
+
+  local path, fragment = target:match "^(.-)#(.*)$"
+  if not path then path = target end
+
+  if path == "" then
+    path = vim.api.nvim_buf_get_name(0)
+  else
+    path = vim.uri_decode(path)
+    if path:sub(1, 1) == "~" then
+      path = vim.fn.expand(path)
+    elseif not vim.startswith(path, "/") then
+      local current_file = vim.api.nvim_buf_get_name(0)
+      local base = current_file ~= "" and vim.fs.dirname(current_file) or vim.uv.cwd()
+      path = vim.fs.joinpath(base, path)
+    end
+    path = vim.fs.normalize(path)
+  end
+
+  if not path or vim.uv.fs_stat(path) == nil then
+    vim.notify("Markdown link does not exist: " .. selected.target, vim.log.levels.ERROR)
+    return
+  end
+
+  vim.cmd.edit(vim.fn.fnameescape(path))
+  jump_to_markdown_fragment(fragment)
+end
+
+-- Buffer and file lifecycle helpers.
 function M.save_session_and_quit()
   local resession = require "resession"
   local cwd = vim.uv.cwd() or vim.fn.getcwd()
@@ -241,6 +331,7 @@ function M.strip_trailing_whitespace_current_buffer()
   vim.notify "Trailing whitespace removed"
 end
 
+-- Rust code-action helpers.
 local function looks_like_match_arms_action(action)
   local title = (action.title or ""):lower()
   return title:find("fill match arms", 1, true) ~= nil
@@ -369,6 +460,7 @@ function M.rust_fill_match_arms_smart()
   replace_generated_todos_with_braces(open_pos)
 end
 
+-- Selection and register helpers.
 function M.select_whole_file() vim.cmd.normal { args = { "gg0vG$" }, bang = true } end
 
 local function visual_paste_restore_reg()
@@ -400,6 +492,7 @@ function M.visual_paste_keep_regs(cmd)
   return cmd
 end
 
+-- Restart-session helpers.
 local function restart_session_file()
   local dir = vim.fn.stdpath "state" .. "/restart-session"
   vim.fn.mkdir(dir, "p")
@@ -534,6 +627,7 @@ function M.restart_with_session()
   vim.cmd("restart source " .. vim.fn.fnameescape(file))
 end
 
+-- Rust unused-import cleanup.
 function M.rust_remove_unused_imports_this_file()
   if vim.bo.filetype ~= "rust" then return end
 
@@ -679,6 +773,9 @@ function M.rust_remove_unused_imports_this_file()
   vim.notify(("Applied: %s"):format(best.title or "remove unused imports"))
 end
 
+-- CodeDiff entry points and follow-state helpers.
+local codediff_resume_position
+
 function M.scope_codediff_to_cwd(args, expected_root)
   local scoped_args = vim.deepcopy(args or {})
   local cwd = vim.fs.normalize(vim.fn.getcwd())
@@ -714,6 +811,9 @@ function M.open_codediff(args, root)
 
   -- Keep the comparison and its repository together. Reopening from a buffer
   -- in another project must not reinterpret revisions in that project.
+  if root ~= vim.g.viter_codediff_last_root or not vim.deep_equal(args, vim.g.viter_codediff_last_args) then
+    codediff_resume_position = nil
+  end
   vim.g.viter_codediff_last_args = vim.deepcopy(args)
   vim.g.viter_codediff_last_root = root
 
@@ -726,17 +826,28 @@ function M.page_scroll(up)
 
   -- A count on CTRL-U/CTRL-D becomes the persistent 'scroll' value. Honor the
   -- count for this movement, then restore the uncounted half-page behavior.
-  vim.cmd.normal({ args = { tostring(amount) .. string.char(up and 21 or 4) }, bang = true })
+  vim.cmd.normal { args = { tostring(amount) .. string.char(up and 21 or 4) }, bang = true }
   vim.wo.scroll = 0
 end
 
-local function store_codediff_position(path)
-  if type(path) ~= "string" or path == "" then return end
+function M.remember_codediff_position(tabpage, win)
+  local lifecycle = require "codediff.ui.lifecycle"
+  local session = lifecycle.get_session(tabpage)
+  if not session or not session.git_root then return end
+  local original_win, modified_win = lifecycle.get_windows(tabpage)
+  local side = win == modified_win and "modified" or win == original_win and "original" or nil
+  local ref = side and session[side]
+  if not ref or not ref.relative then return end
 
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  vim.g.viter_codediff_continue_file = vim.fs.normalize(path)
-  vim.g.viter_codediff_continue_line = cursor[1]
-  vim.g.viter_codediff_continue_col = cursor[2]
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local explorer = lifecycle.get_panel_view(tabpage)
+  codediff_resume_position = {
+    file = vim.fs.normalize(vim.fs.joinpath(session.git_root, explorer and explorer.current_file_path or ref.relative)),
+    line = cursor[1],
+    col = cursor[2],
+    side = side,
+    group = explorer and explorer.current_file_group,
+  }
 end
 
 local function active_codediff_tab()
@@ -766,6 +877,8 @@ function M.codediff_follow_position(tabpage, relative_path)
   local session = require("codediff.ui.lifecycle").get_session(tabpage)
   local root = session and session.git_root
   if not root then return end
+  local explorer = require("codediff.ui.lifecycle").get_panel_view(tabpage)
+  if request.group and explorer and explorer.current_file_group ~= request.group then return end
 
   local selected = vim.fs.normalize(vim.fs.joinpath(root, relative_path))
   if selected ~= request.file then return end
@@ -774,9 +887,7 @@ function M.codediff_follow_position(tabpage, relative_path)
   return { line = request.line, request = request }
 end
 
-function M.finish_codediff_follow(request)
-  clear_codediff_follow_request(request)
-end
+function M.finish_codediff_follow(request) clear_codediff_follow_request(request) end
 
 function M.select_codediff_follow(tabpage)
   local request = codediff_follow_request
@@ -796,25 +907,32 @@ function M.select_codediff_follow(tabpage)
     for _, file in ipairs(files) do
       if vim.fs.normalize(file.data.path) == vim.fs.normalize(relative) then
         target = file
-        break
+        if not request.group or file.data.group == request.group then break end
       end
     end
   end
 
   if not target then
     clear_codediff_follow_request(request)
-    if request.opening then
+    if request.opening and not request.resume then
       lifecycle.close(tabpage)
       if request.source_tab and vim.api.nvim_tabpage_is_valid(request.source_tab) then
         vim.api.nvim_set_current_tabpage(request.source_tab)
       end
     end
-    vim.notify("File has no changes", vim.log.levels.INFO)
+    vim.notify(request.resume and "Previous diff file has no changes now" or "File has no changes", vim.log.levels.INFO)
     return false
   end
 
   vim.api.nvim_set_current_tabpage(tabpage)
-  if request.applied and explorer.current_file_path == target.data.path then return true end
+  if
+    request.applied
+    and explorer.current_file_path == target.data.path
+    and explorer.current_file_group == target.data.group
+  then
+    return true
+  end
+  request.group = target.data.group
 
   if explorer.winid and vim.api.nvim_win_is_valid(explorer.winid) and target.node and target.node._line then
     vim.api.nvim_win_set_cursor(explorer.winid, { target.node._line, 0 })
@@ -882,10 +1000,9 @@ function M.open_codediff_main()
   }
   local mainline
   for _, candidate in ipairs(candidates) do
-    local result = vim.system(
-      { "git", "-C", root, "rev-parse", "--verify", "--quiet", candidate.ref .. "^{commit}" },
-      { text = true }
-    ):wait()
+    local result = vim
+      .system({ "git", "-C", root, "rev-parse", "--verify", "--quiet", candidate.ref .. "^{commit}" }, { text = true })
+      :wait()
     if result.code == 0 then
       mainline = candidate.name
       break
@@ -909,32 +1026,21 @@ function M.continue_codediff()
     return
   end
 
-  local current_file = vim.api.nvim_buf_get_name(0)
-  if current_file ~= "" then
-    store_codediff_position(current_file)
+  if codediff_resume_position then
+    -- Reuse the asynchronous file-selection path, but restore the exact cursor
+    -- instead of applying rw's "current hunk or first change" behavior.
+    local request = vim.deepcopy(codediff_resume_position)
+    request.resume = true
+    request.opening = true
+    request.source_tab = vim.api.nvim_get_current_tabpage()
+    request.deadline = vim.uv.hrtime() + 5e9
+    codediff_follow_request = request
+    if not reopen_last_codediff() then M.open_codediff() end
+    expire_codediff_follow_request(request)
+  else
     if reopen_last_codediff() then return end
     M.open_codediff()
-    return
   end
-
-  local root = vim.g.viter_codediff_last_root
-  local relative_path = vim.g.viter_codediff_last_file
-
-  if type(root) ~= "string" or root == "" or type(relative_path) ~= "string" or relative_path == "" then
-    vim.notify("No CodeDiff position to continue", vim.log.levels.INFO)
-    return
-  end
-
-  local path = root .. "/" .. relative_path
-  if vim.fn.filereadable(path) == 0 then
-    vim.notify("Last CodeDiff file no longer exists: " .. relative_path, vim.log.levels.WARN)
-    return
-  end
-
-  vim.cmd("edit " .. vim.fn.fnameescape(path))
-  store_codediff_position(path)
-  if reopen_last_codediff() then return end
-  M.open_codediff()
 end
 
 return M

@@ -7,16 +7,10 @@ return {
   ---@type AstroCoreOpts
   opts = {
     features = {
+      -- Override Astro default: detect large buffers sooner.
       large_buf = { size = 1024 * 256, lines = 10000 },
-      autopairs = true,
-      cmp = true,
+      -- Override Astro default: keep virtual lines off initially.
       diagnostics = { virtual_text = true, virtual_lines = false },
-      highlighturl = true,
-      notifications = true,
-    },
-    diagnostics = {
-      virtual_text = true,
-      underline = true,
     },
     autocmds = {
       clear_jumps_on_start = {
@@ -34,16 +28,14 @@ return {
             if ev.operator == "y" then require("vim.ui.clipboard.osc52").copy "+"(ev.regcontents) end
           end,
         },
-      } or nil,
+      } or false,
     },
     options = {
       opt = {
         -- y goes to the local terminal over SSH; p stays in Vim.
         clipboard = use_osc52 and "" or "unnamedplus",
-        relativenumber = true,
-        number = true,
         spell = false,
-        signcolumn = "yes",
+        -- Override Astro default.
         wrap = true,
       },
       g = {

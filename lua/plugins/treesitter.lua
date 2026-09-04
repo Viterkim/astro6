@@ -4,18 +4,14 @@ return {
   opts = function(_, opts)
     ---@cast opts AstroCoreOpts
     opts.treesitter = opts.treesitter or {}
-    opts.treesitter.highlight = true
-    opts.treesitter.indent = true
+    -- Override Astro default: install parsers explicitly.
     opts.treesitter.auto_install = false
 
     local ensure_installed = opts.treesitter.ensure_installed
     if type(ensure_installed) == "table" then
-      local seen = {}
-      opts.treesitter.ensure_installed = vim.tbl_filter(function(parser)
-        if seen[parser] then return false end
-        seen[parser] = true
-        return true
-      end, ensure_installed)
+      local astrocore = require "astrocore"
+      astrocore.list_insert_unique(ensure_installed, { "regex" })
+      opts.treesitter.ensure_installed = astrocore.unique_list(ensure_installed)
     end
   end,
 }

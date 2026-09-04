@@ -34,9 +34,8 @@ return {
       },
 
       hijack_netrw_behavior = "open_current",
-      -- Avoid recursive filesystem watcher traffic in large Rust workspaces.
-      -- Neo-tree still refreshes when opened and after its own file operations.
-      use_libuv_file_watcher = false,
+      -- Watches only directories Neo-tree has loaded (non-recursively) and skips .git.
+      use_libuv_file_watcher = true,
       use_popups_for_input = true,
     },
 
@@ -50,6 +49,7 @@ return {
         ["n"] = function() vim.cmd "normal! k" end,
         ["e"] = function() vim.cmd "normal! j" end,
         ["i"] = "open",
+        ["."] = "toggle_hidden",
         ["ø"] = "show_file_details",
 
         ["H"] = function() require("smart-splits").move_cursor_left() end,

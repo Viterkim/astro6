@@ -13,6 +13,17 @@ return {
         vim.keymap.set("n", "q", "<Plug>(VM-Remove-Last-Region)zz", opts)
       end,
     })
+
+    vim.api.nvim_create_autocmd("FileType", {
+      group = vim.api.nvim_create_augroup("markdown_mappings", { clear = true }),
+      pattern = "markdown",
+      callback = function(args)
+        vim.keymap.set("n", "gd", function() require("funcs").open_markdown_link() end, {
+          buffer = args.buf,
+          desc = "Open Markdown link",
+        })
+      end,
+    })
   end,
   opts = {
     mappings = {
@@ -46,29 +57,6 @@ return {
             )
           end,
           desc = "Close buffer from tabline",
-        },
-        -- Override Astro default.
-        ["gd"] = { function() require("funcs").centered_lsp_picker "lsp_definitions" end, desc = "LSP Definition" },
-        -- Override Astro default.
-        ["gy"] = {
-          function() require("funcs").centered_lsp_picker "lsp_type_definitions" end,
-          desc = "LSP Type Definition",
-        },
-        -- Override Neovim default.
-        ["grr"] = { function() require("funcs").centered_lsp_picker "lsp_references" end, desc = "Show References" },
-        ["gI"] = {
-          function() require("funcs").centered_lsp_picker "lsp_implementations" end,
-          desc = "LSP Implementation",
-        },
-        -- Override Neovim default.
-        ["gri"] = {
-          function() require("funcs").centered_lsp_picker "lsp_implementations" end,
-          desc = "LSP Implementation",
-        },
-        -- Override Neovim default.
-        ["grt"] = {
-          function() require("funcs").centered_lsp_picker "lsp_type_definitions" end,
-          desc = "LSP Type Definition",
         },
         ["ø"] = { function() vim.lsp.buf.hover() end, desc = "Hover symbol details" },
 
@@ -362,6 +350,10 @@ return {
         ["<S-Down>"] = { "<cmd>m+<cr>", desc = "Move line down" },
         ["<S-l>"] = { "<cmd>:call vm#commands#add_cursor_up(0, 1)<cr>", desc = "Multicursor up" },
         ["<S-u>"] = { "<cmd>:call vm#commands#add_cursor_down(0, 1)<cr>", desc = "Multicursor down" },
+        -- Override Astro default; vim-visual-multi owns the normalized key.
+        ["<C-Up>"] = false,
+        -- Override Astro default; vim-visual-multi owns the normalized key.
+        ["<C-Down>"] = false,
         ["H"] = { function() require("smart-splits").move_cursor_left() end, desc = "Move left" },
         ["h"] = { function() require("smart-splits").move_cursor_right() end, desc = "Move right" },
         ["k"] = { function() require("smart-splits").move_cursor_down() end, desc = "Move down" },

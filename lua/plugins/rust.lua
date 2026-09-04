@@ -160,6 +160,11 @@ return {
     opts.server = opts.server or {}
     local command_cwd
 
+    -- TEMP MONKEY PATCH: current rust-analyzer releases log a warning for
+    -- every missing optional config path they probe. Preserve real errors and
+    -- panics without filling Neovim's LSP log with those expected misses.
+    opts.server.cmd_env = vim.tbl_extend("force", opts.server.cmd_env or {}, { RA_LOG = "error" })
+
     local default_on_attach = opts.server.on_attach
     opts.server.on_attach = function(client, bufnr)
       if default_on_attach then default_on_attach(client, bufnr) end

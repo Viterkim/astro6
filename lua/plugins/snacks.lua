@@ -25,7 +25,7 @@ end
 local function open_neotree_with_project_src()
   local cwd = vim.fn.getcwd()
   local src = cwd .. "/src"
-  local stat = (vim.uv or vim.loop).fs_stat(src)
+  local stat = vim.uv.fs_stat(src)
 
   if stat and stat.type == "directory" then
     local manager = require "neo-tree.sources.manager"
