@@ -42,8 +42,77 @@ return {
     local history_module = require "codediff.ui.history"
     local history_render = require "codediff.ui.history.render"
     local lifecycle = require "codediff.ui.lifecycle"
+    local navigation = require "codediff.ui.view.navigation"
+    local refresh = require "codediff.ui.refresh"
+    local view_render = require "codediff.ui.view.render"
     local codediff_config = require "codediff.config"
     local pending = {}
+
+    -- A cross-file hunk jump changes the explorer selection before the new
+    -- diff has finished loading. Another e/n in that gap can navigate using
+    -- the previous file's hunks and leave the selection and view out of sync.
+    local hunk_moves = {}
+    local next_hunk, prev_hunk = navigation.next_hunk, navigation.prev_hunk
+    local function drain_hunk_moves(tabpage)
+      local moves = hunk_moves[tabpage]
+      if not moves or moves.draining then return end
+      if not vim.api.nvim_tabpage_is_valid(tabpage) or vim.api.nvim_get_current_tabpage() ~= tabpage then
+        hunk_moves[tabpage] = nil
+        return
+      end
+      local session = lifecycle.get_session(tabpage)
+      if not session then
+        hunk_moves[tabpage] = nil
+        return
+      end
+      if (session.refresh and session.refresh.loading) or not session.stored_diff_result then return end
+
+      moves.draining = true
+      while #moves.queue > 0 do
+        local next_direction = table.remove(moves.queue, 1)
+        if next_direction == "next" then next_hunk() else prev_hunk() end
+        if (session.refresh and session.refresh.loading) or not session.stored_diff_result then break end
+      end
+      moves.draining = false
+      if #moves.queue == 0 then hunk_moves[tabpage] = nil end
+    end
+    local function move_hunk(direction)
+      local tabpage = vim.api.nvim_get_current_tabpage()
+      local moves = hunk_moves[tabpage]
+      if not moves then
+        moves = { queue = {} }
+        hunk_moves[tabpage] = moves
+      end
+      table.insert(moves.queue, direction)
+      drain_hunk_moves(tabpage)
+    end
+    navigation.next_hunk = function() move_hunk "next" end
+    navigation.prev_hunk = function() move_hunk "prev" end
+
+    -- TEMP MONKEY PATCH: CodeDiff forces wrap off while rendering side-by-side
+    -- views. Re-enable it after scrollbind is established so selecting or
+    -- reloading a file does not leave the diff panes unwrapped.
+    local function enable_word_wrap(win)
+      if not win or not vim.api.nvim_win_is_valid(win) then return end
+      vim.wo[win].wrap = true
+      vim.wo[win].linebreak = true
+      vim.wo[win].breakindent = true
+    end
+
+    local establish_scrollbind = view_render.establish_scrollbind
+    view_render.establish_scrollbind = function(original_win, modified_win, ...)
+      local result = establish_scrollbind(original_win, modified_win, ...)
+      enable_word_wrap(original_win)
+      enable_word_wrap(modified_win)
+      return result
+    end
+
+    local function wrap_diff_windows(tabpage)
+      if not tabpage or not vim.api.nvim_tabpage_is_valid(tabpage) then return end
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+        if vim.w[win].codediff_restore == 1 then enable_word_wrap(win) end
+      end
+    end
 
     local function clear_pending(tabpage)
       if not tabpage then return end
@@ -112,7 +181,7 @@ return {
 
     local create_explorer = explorer_render.create
     local function create_explorer_with_cleanup(...)
-      local tabpage = select(3, ...)
+      local tabpage = select(2, ...)
       local explorer = capture_resize_autocmds(tabpage, create_explorer, ...)
       if tabpage then
         -- TEMP MONKEY PATCH: CodeDiff has no configurable context-specific
@@ -146,11 +215,24 @@ return {
     explorer_module.create = create_explorer_with_cleanup
 
     local create_history = history_render.create
-    local function create_history_with_cleanup(...) return capture_resize_autocmds(select(3, ...), create_history, ...) end
+    local function create_history_with_cleanup(...) return capture_resize_autocmds(select(2, ...), create_history, ...) end
     history_render.create = create_history_with_cleanup
     history_module.create = create_history_with_cleanup
 
     local group = vim.api.nvim_create_augroup("viter_codediff", { clear = true })
+    local wrap_enter_autocmds = {}
+
+    local function keep_diff_windows_wrapped(tabpage)
+      if wrap_enter_autocmds[tabpage] then pcall(vim.api.nvim_del_autocmd, wrap_enter_autocmds[tabpage]) end
+      wrap_enter_autocmds[tabpage] = vim.api.nvim_create_autocmd({ "BufWinEnter", "BufEnter", "WinEnter", "FileType" }, {
+        group = group,
+        callback = function()
+          if vim.api.nvim_get_current_tabpage() ~= tabpage then return end
+          local win = vim.api.nvim_get_current_win()
+          if vim.w[win].codediff_restore == 1 then enable_word_wrap(win) end
+        end,
+      })
+    end
 
     local function remap_highlight(win, from, to)
       local mappings = vim.split(vim.wo[win].winhighlight, ",", { plain = true, trimempty = true })
@@ -216,6 +298,25 @@ return {
         indent_refresh_scheduled[tabpage] = nil
         refresh_indent_scopes(tabpage)
       end)
+    end
+
+    -- CodeDiff publishes the rendered diff through ready(). Its scheduled
+    -- callback clears loading first, then this callback refreshes the panes
+    -- and resumes any hunk keys pressed during the file change.
+    local ready = refresh.ready
+    refresh.ready = function(tabpage)
+      local result = ready(tabpage)
+      vim.schedule(function()
+        local session = lifecycle.get_session(tabpage)
+        if not session or (session.refresh and session.refresh.loading) then return end
+        wrap_diff_windows(tabpage)
+        refresh_indent_scopes(tabpage)
+        -- The first draw can precede the final diff-window setup, leaving
+        -- Tree-sitter captures absent from the displayed right pane.
+        if vim.api.nvim_get_current_tabpage() == tabpage then vim.cmd "redraw!" end
+        drain_hunk_moves(tabpage)
+      end)
+      return result
     end
 
     local function view_ready(tabpage, state)
@@ -317,6 +418,7 @@ return {
         end
 
         vim.cmd "normal! zz"
+        wrap_diff_windows(tabpage)
         schedule_indent_refresh(tabpage)
         if state.follow_request then require("funcs").finish_codediff_follow(state.follow_request) end
         pending[tabpage] = nil
@@ -334,9 +436,13 @@ return {
         local tabpage = args.data and args.data.tabpage
         if tabpage then
           vim.g.viter_codediff_last_tab = tabpage
+          keep_diff_windows_wrapped(tabpage)
           fix_comment_contrast(tabpage)
           schedule_indent_refresh(tabpage)
-          vim.schedule(function() require("funcs").select_codediff_follow(tabpage) end)
+          vim.schedule(function()
+            wrap_diff_windows(tabpage)
+            require("funcs").select_codediff_follow(tabpage)
+          end)
         end
       end,
     })
@@ -351,11 +457,16 @@ return {
         vim.g.viter_codediff_last_file = data.path
         fix_comment_contrast(data.tabpage)
         schedule_indent_refresh(data.tabpage)
+        vim.schedule(function() wrap_diff_windows(data.tabpage) end)
 
         local session = lifecycle.get_session(data.tabpage)
         local root = session and session.git_root
         local selected = root and vim.fs.normalize(vim.fs.joinpath(root, data.path))
         local follow = require("funcs").codediff_follow_position(data.tabpage, data.path)
+        if not follow then
+          clear_pending(data.tabpage)
+          return
+        end
         pending[data.tabpage] = {
           deadline = follow and follow.request.deadline or vim.uv.hrtime() + 5e9,
           file = selected,
@@ -379,7 +490,9 @@ return {
           vim.b[bufnr].viter_codediff_loaded = true
           for _, win in ipairs(vim.api.nvim_list_wins()) do
             if vim.api.nvim_win_get_buf(win) == bufnr then
-              schedule_indent_refresh(vim.api.nvim_win_get_tabpage(win))
+              local tabpage = vim.api.nvim_win_get_tabpage(win)
+              schedule_indent_refresh(tabpage)
+              vim.schedule(function() wrap_diff_windows(tabpage) end)
             end
           end
         end
@@ -393,7 +506,10 @@ return {
       group = group,
       callback = function()
         local tabpage = vim.api.nvim_get_current_tabpage()
-        if vim.w.codediff_restore == 1 then schedule_indent_refresh(tabpage) end
+        if vim.w.codediff_restore == 1 then
+          wrap_diff_windows(tabpage)
+          schedule_indent_refresh(tabpage)
+        end
         if pending[tabpage] then settle_view(tabpage) end
       end,
     })
@@ -402,9 +518,11 @@ return {
     -- window switches while CodeDiff is still selecting/rendering a file.
     vim.api.nvim_create_autocmd({ "WinLeave", "TabLeave" }, {
       group = group,
-      callback = function()
+      callback = function(args)
         local tabpage = vim.api.nvim_get_current_tabpage()
-        if not pending[tabpage] then
+        if args.event == "TabLeave" then hunk_moves[tabpage] = nil end
+        local session = lifecycle.get_session(tabpage)
+        if not pending[tabpage] and not (session and session.refresh and session.refresh.loading) then
           require("funcs").remember_codediff_position(tabpage, vim.api.nvim_get_current_win())
         end
       end,
@@ -444,6 +562,9 @@ return {
       callback = function(args)
         local tabpage = args.data and args.data.tabpage
         if tabpage then
+          hunk_moves[tabpage] = nil
+          if wrap_enter_autocmds[tabpage] then pcall(vim.api.nvim_del_autocmd, wrap_enter_autocmds[tabpage]) end
+          wrap_enter_autocmds[tabpage] = nil
           for _, autocmd in ipairs(leaked_resize_autocmds[tabpage] or {}) do
             pcall(vim.api.nvim_del_autocmd, autocmd)
           end

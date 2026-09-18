@@ -103,8 +103,7 @@ local function markdown_heading_slug(heading)
     :lower()
     :gsub("`", "")
     :gsub("[^%w%s_-]", "")
-    :gsub("[%s_]+", "-")
-    :gsub("%-+", "-")
+    :gsub("%s", "-")
     :gsub("^%-", "")
     :gsub("%-$", "")
 end
@@ -122,13 +121,21 @@ local function jump_to_markdown_fragment(fragment)
   end
 
   fragment = vim.uri_decode(fragment)
+  local seen = {}
   for heading_line, line in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
     local heading = line:match "^%s*#+%s+(.+)$"
-    if heading and markdown_heading_slug(heading:gsub("%s+#+%s*$", "")) == fragment:lower() then
-      vim.api.nvim_win_set_cursor(0, { heading_line, 0 })
-      return
+    if heading then
+      local slug = markdown_heading_slug(heading:gsub("%s+#+%s*$", ""))
+      local count = seen[slug] or 0
+      seen[slug] = count + 1
+      if count > 0 then slug = slug .. "-" .. count end
+      if slug == fragment:lower() then
+        vim.api.nvim_win_set_cursor(0, { heading_line, 0 })
+        return
+      end
     end
   end
+  vim.notify("Markdown heading not found: #" .. fragment, vim.log.levels.WARN)
 end
 
 function M.open_markdown_link()
@@ -842,11 +849,13 @@ function M.remember_codediff_position(tabpage, win)
   local cursor = vim.api.nvim_win_get_cursor(win)
   local explorer = lifecycle.get_panel_view(tabpage)
   codediff_resume_position = {
-    file = vim.fs.normalize(vim.fs.joinpath(session.git_root, explorer and explorer.current_file_path or ref.relative)),
+    file = vim.fs.normalize(
+      vim.fs.joinpath(session.git_root, explorer and explorer.data.current_file_path or ref.relative)
+    ),
     line = cursor[1],
     col = cursor[2],
     side = side,
-    group = explorer and explorer.current_file_group,
+    group = explorer and explorer.data.current_file_group,
   }
 end
 
@@ -878,7 +887,7 @@ function M.codediff_follow_position(tabpage, relative_path)
   local root = session and session.git_root
   if not root then return end
   local explorer = require("codediff.ui.lifecycle").get_panel_view(tabpage)
-  if request.group and explorer and explorer.current_file_group ~= request.group then return end
+  if request.group and explorer and explorer.data.current_file_group ~= request.group then return end
 
   local selected = vim.fs.normalize(vim.fs.joinpath(root, relative_path))
   if selected ~= request.file then return end
@@ -897,13 +906,13 @@ function M.select_codediff_follow(tabpage)
   local lifecycle = require "codediff.ui.lifecycle"
   local explorer = lifecycle.get_panel_view(tabpage)
   local session = lifecycle.get_session(tabpage)
-  local root = explorer and explorer.git_root or session and session.git_root
+  local root = explorer and explorer.data.git_root or session and session.git_root
   if not explorer or not root then return false end
 
   local relative = vim.fs.relpath(vim.fs.normalize(root), request.file)
   local target
   if relative and relative ~= ".." and not vim.startswith(relative, "../") then
-    local files = require("codediff.ui.explorer.refresh").get_all_files(explorer.tree)
+    local files = require("codediff.ui.explorer.tree").get_all_files(explorer.tree)
     for _, file in ipairs(files) do
       if vim.fs.normalize(file.data.path) == vim.fs.normalize(relative) then
         target = file
@@ -927,8 +936,8 @@ function M.select_codediff_follow(tabpage)
   vim.api.nvim_set_current_tabpage(tabpage)
   if
     request.applied
-    and explorer.current_file_path == target.data.path
-    and explorer.current_file_group == target.data.group
+    and explorer.data.current_file_path == target.data.path
+    and explorer.data.current_file_group == target.data.group
   then
     return true
   end

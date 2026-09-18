@@ -35,6 +35,7 @@ local function toolchain_cwd(filename)
 end
 
 local analyzer_state = {}
+local pending_dependency_starts = {}
 
 local rust_target_scopes = {
   default = { allTargets = false, extraArgs = { "--no-deps" } },
@@ -77,9 +78,50 @@ local function start_buffer(bufnr)
   end
 end
 
-local function start_waiting_buffers(buffers)
-  for bufnr in pairs(buffers) do
+local function has_initialized_analyzer()
+  return vim
+    .iter(vim.lsp.get_clients { name = "rust-analyzer" })
+    :any(function(client) return client.initialized and not client:is_stopped() end)
+end
+
+local function has_project_rust_buffer()
+  return vim.iter(vim.api.nvim_list_bufs()):any(
+    function(bufnr)
+      return vim.api.nvim_buf_is_loaded(bufnr)
+        and vim.bo[bufnr].filetype == "rust"
+        and not is_dependency_source(vim.api.nvim_buf_get_name(bufnr))
+    end
+  )
+end
+
+local function defer_dependency_start(bufnr, attempt)
+  if pending_dependency_starts[bufnr] and not attempt then return end
+  pending_dependency_starts[bufnr] = true
+  attempt = attempt or 1
+
+  if has_initialized_analyzer() or not has_project_rust_buffer() or attempt >= 100 then
+    pending_dependency_starts[bufnr] = nil
     start_buffer(bufnr)
+  else
+    vim.defer_fn(function() defer_dependency_start(bufnr, attempt + 1) end, 100)
+  end
+end
+
+local function start_waiting_buffers(buffers)
+  local project_buffers = {}
+  local dependency_buffers = {}
+
+  for bufnr in pairs(buffers) do
+    local filename = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
+    table.insert(is_dependency_source(filename) and dependency_buffers or project_buffers, bufnr)
+  end
+
+  for _, bufnr in ipairs(project_buffers) do
+    start_buffer(bufnr)
+  end
+
+  for _, bufnr in ipairs(dependency_buffers) do
+    defer_dependency_start(bufnr)
   end
 end
 
@@ -190,11 +232,23 @@ return {
       end
     end
 
-    local default_auto_attach = opts.server.auto_attach
     opts.server.auto_attach = function(bufnr)
-      if default_auto_attach == false then return false end
-      if type(default_auto_attach) == "function" and not default_auto_attach(bufnr) then return false end
+      if
+        vim.bo[bufnr].buftype ~= ""
+        or not require("rustaceanvim.os").is_valid_file_path(vim.api.nvim_buf_get_name(bufnr))
+      then
+        return false
+      end
       if not ensure_rust_analyzer(bufnr) then return false end
+
+      if
+        is_dependency_source(vim.api.nvim_buf_get_name(bufnr))
+        and has_project_rust_buffer()
+        and not has_initialized_analyzer()
+      then
+        defer_dependency_start(bufnr)
+        return false
+      end
 
       return true
     end
