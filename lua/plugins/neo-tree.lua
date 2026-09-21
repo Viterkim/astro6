@@ -49,7 +49,7 @@ return {
         ["n"] = function() vim.cmd "normal! k" end,
         ["e"] = function() vim.cmd "normal! j" end,
         ["i"] = "open",
-        ["."] = "toggle_hidden",
+        [","] = "toggle_hidden",
         ["ø"] = "show_file_details",
 
         ["H"] = function() require("smart-splits").move_cursor_left() end,

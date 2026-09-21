@@ -6,6 +6,65 @@ local picker_excludes = vim.list_extend(vim.deepcopy(image_globs), {
   "garage",
 })
 
+local grep_excludes = vim.list_extend(vim.deepcopy(picker_excludes), {
+  "tests",
+})
+
+local rust_test_ranges = {}
+
+local function get_rust_test_ranges(path)
+  local stat = vim.uv.fs_stat(path)
+  if not stat then return {} end
+
+  local version = table.concat({ stat.size, stat.mtime.sec, stat.mtime.nsec }, ":")
+  local cached = rust_test_ranges[path]
+  if cached and cached.version == version then return cached.ranges end
+
+  local file = io.open(path, "rb")
+  if not file then return {} end
+  local source = file:read "*a"
+  file:close()
+
+  local ok, trees = pcall(function() return vim.treesitter.get_string_parser(source, "rust"):parse() end)
+  if not ok or not trees[1] then return {} end
+  local ranges = {}
+
+  local function visit(parent)
+    local cfg_test = false
+    for index = 0, parent:named_child_count() - 1 do
+      local child = parent:named_child(index)
+      local kind = child:type()
+      if kind == "attribute_item" then
+        local attribute = vim.treesitter.get_node_text(child, source):gsub("%s", "")
+        cfg_test = cfg_test or attribute == "#[cfg(test)]"
+      elseif kind ~= "line_comment" and kind ~= "block_comment" then
+        if cfg_test then
+          local start_row, _, end_row = child:range()
+          ranges[#ranges + 1] = { start_row, end_row }
+        else
+          visit(child)
+        end
+        cfg_test = false
+      end
+    end
+  end
+
+  visit(trees[1]:root())
+  rust_test_ranges[path] = { version = version, ranges = ranges }
+  return ranges
+end
+
+local function hide_rust_test_matches(item)
+  if not item.file or not item.pos or not item.file:match "%.rs$" then return end
+  local path = require("snacks.picker.util").path(item)
+  if not path then return end
+
+  local row = item.pos[1] - 1
+  for _, range in ipairs(get_rust_test_ranges(path)) do
+    if row >= range[1] and row <= range[2] then return false end
+  end
+end
+
 local function git_picker_layout(list_height)
   return {
     layout = {
@@ -120,11 +179,13 @@ return {
         },
         grep = {
           hidden = true,
-          exclude = picker_excludes,
+          exclude = grep_excludes,
+          transform = hide_rust_test_matches,
         },
         grep_word = {
           hidden = true,
-          exclude = picker_excludes,
+          exclude = grep_excludes,
+          transform = hide_rust_test_matches,
         },
 
         git_status = { layout = git_picker_layout(5) },
