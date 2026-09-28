@@ -48,6 +48,23 @@ return {
     local codediff_config = require "codediff.config"
     local pending = {}
 
+    -- CodeDiff can reuse an unlisted real buffer. List it in the destination
+    -- tab so AstroNvim receives BufAdd there even if the buffer was visible.
+    local panes = require "codediff.ui.view.actions.panes"
+    local open_in_prev_tab = panes.open_in_prev_tab
+    panes.open_in_prev_tab = function(ctx)
+      local result = open_in_prev_tab(ctx)
+      local buf = vim.api.nvim_get_current_buf()
+      if
+        vim.api.nvim_get_current_tabpage() ~= ctx.tabpage
+        and vim.bo[buf].buftype == ""
+        and vim.api.nvim_buf_get_name(buf) ~= ""
+      then
+        vim.bo[buf].buflisted = true
+      end
+      return result
+    end
+
     -- A cross-file hunk jump changes the explorer selection before the new
     -- diff has finished loading. Another e/n in that gap can navigate using
     -- the previous file's hunks and leave the selection and view out of sync.
