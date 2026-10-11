@@ -30,16 +30,13 @@ return {
       rust_analyzer = {
         settings = {
           ["rust-analyzer"] = {
-            -- Override rust-analyzer default: analyze files on demand instead
-            -- of warming the entire workspace on every server start.
-            cachePriming = { enable = false },
-            -- Keep Clippy package-scoped so large workspaces stay usable.
+            -- Check the whole workspace and its tests by default.
             checkOnSave = true,
             check = {
-              command = "clippy",
-              extraArgs = { "--no-deps" },
-              workspace = false,
-              allTargets = false,
+              command = "check",
+              extraArgs = {},
+              workspace = true,
+              allTargets = true,
             },
           },
         },

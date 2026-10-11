@@ -22,12 +22,79 @@ local function dependency_tree(root)
     or vim.startswith(root, rustup_home .. "/")
 end
 
+local function notify_missing_rust_tests(path)
+  local analyzer = require("rustaceanvim.rust_analyzer").get_client_for_file(path, "experimental/runnables")
+  local loading = analyzer and analyzer.progress and analyzer.progress.pending
+    and next(analyzer.progress.pending) ~= nil
+  local message = not analyzer and "Rust analyzer is still starting"
+    or loading and "Rust analyzer is still loading tests"
+    or "No Rust tests found in this file"
+
+  vim.notify(message, vim.log.levels.INFO)
+end
+
 local function configure_neotest(_, opts)
   opts.discovery = opts.discovery or {}
   local previous_filter = opts.discovery.filter_dir
   opts.discovery.filter_dir = function(name, relative, root)
     if ignored_discovery_dirs[name] or dependency_tree(root) then return false end
     return not previous_filter or previous_filter(name, relative, root)
+  end
+
+  opts.consumers = opts.consumers or {}
+  opts.consumers.rust_tests = function(client)
+    client.listeners.results = function(adapter_id, results, partial)
+      if partial or not vim.startswith(adapter_id, "rustaceanvim:") then return end
+
+      local position_id = require("neotest").run.get_last_run()
+      local result = position_id and results[position_id]
+      if not result or result.status ~= "failed" or not result.output then return end
+
+      vim.schedule(function()
+        require("neotest").output.open { position_id = position_id, short = false, enter = false }
+      end)
+    end
+
+    return {
+      nearest = require("nio").create(function()
+        if vim.bo.filetype == "rust" then
+          local path = vim.api.nvim_buf_get_name(0)
+          client:_update_positions(path)
+          if not client:get_position(path) then
+            notify_missing_rust_tests(path)
+            return
+          end
+        end
+
+        require("neotest").run.run()
+      end),
+
+      file = require("nio").create(function()
+        local path = vim.api.nvim_buf_get_name(0)
+        if vim.bo.filetype ~= "rust" then
+          require("neotest").run.run(path)
+          return
+        end
+
+        client:_update_positions(path)
+        local file = client:get_position(path)
+        if not file then
+          notify_missing_rust_tests(path)
+          return
+        end
+
+        local count = 0
+        for _, child in ipairs(file:children()) do
+          local position = child:data()
+          if position.type == "test" or position.type == "namespace" then
+            count = count + 1
+            require("neotest").run.run(position.id)
+          end
+        end
+
+        if count == 0 then notify_missing_rust_tests(path) end
+      end),
+    }
   end
 
   for _, adapter in ipairs(opts.adapters or {}) do
@@ -74,13 +141,13 @@ return {
       mappings = {
         n = {
           [prefix] = { desc = "󰗇 Tests" },
-          [prefix .. "t"] = { function() neotest().run.run() end, desc = "Run test" },
+          [prefix .. "t"] = { function() neotest().rust_tests.nearest() end, desc = "Run test" },
           [prefix .. "d"] = {
             function() neotest().run.run { strategy = "dap", suite = false } end,
             desc = "Debug test",
           },
           [prefix .. "f"] = {
-            function() neotest().run.run(vim.fn.expand "%") end,
+            function() neotest().rust_tests.file() end,
             desc = "Run all tests in file",
           },
           [prefix .. "p"] = {

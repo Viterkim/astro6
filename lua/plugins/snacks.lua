@@ -65,6 +65,15 @@ local function hide_rust_test_matches(item)
   end
 end
 
+local function configure_grep_tests(opts)
+  if vim.g.rust_search_tests then
+    opts.exclude = picker_excludes
+    opts.transform = nil
+  end
+
+  return opts
+end
+
 local function git_picker_layout(list_height)
   return {
     layout = {
@@ -101,6 +110,11 @@ end
 return {
   "folke/snacks.nvim",
   init = function()
+    vim.api.nvim_create_user_command("RustSearchTest", function()
+      vim.g.rust_search_tests = not vim.g.rust_search_tests
+      vim.notify("Search test code " .. (vim.g.rust_search_tests and "on" or "off"))
+    end, { desc = "Toggle test code in word searches" })
+
     vim.api.nvim_create_autocmd("User", {
       pattern = "SnacksDashboardOpened",
       once = true,
@@ -181,11 +195,13 @@ return {
           hidden = true,
           exclude = grep_excludes,
           transform = hide_rust_test_matches,
+          config = configure_grep_tests,
         },
         grep_word = {
           hidden = true,
           exclude = grep_excludes,
           transform = hide_rust_test_matches,
+          config = configure_grep_tests,
         },
 
         git_status = { layout = git_picker_layout(5) },

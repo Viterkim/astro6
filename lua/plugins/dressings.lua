@@ -14,6 +14,9 @@ return {
     select = {
       enabled = true,
       backend = { "telescope", "builtin" }, -- Fallback order
+      get_config = function(opts)
+        if opts.kind == "rust_target" or opts.kind == "rust_platform" then return { backend = { "builtin" } } end
+      end,
       builtin = {
         relative = "editor",
         max_width = 80,
