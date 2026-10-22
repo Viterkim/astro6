@@ -48,6 +48,35 @@ return {
     local codediff_config = require "codediff.config"
     local pending = {}
 
+    -- A directory symlink is one Git entry, but :edit opens its target as a
+    -- directory and Neo-tree replaces the diff pane. Skip those entries.
+    local git = require "codediff.core.git"
+    local function without_directory_links(root, callback)
+      return function(err, status)
+        if status then
+          for _, group in ipairs { "unstaged", "staged", "conflicts" } do
+            if status[group] then
+              status[group] = vim.tbl_filter(function(file)
+                local path = vim.fs.joinpath(root, file.path)
+                local link = vim.uv.fs_lstat(path)
+                local target = link and link.type == "link" and vim.uv.fs_stat(path)
+                return not (target and target.type == "directory")
+              end, status[group])
+            end
+          end
+        end
+        callback(err, status)
+      end
+    end
+    local get_status = git.get_status_with_line_stats
+    git.get_status_with_line_stats = function(root, callback, ...)
+      return get_status(root, without_directory_links(root, callback), ...)
+    end
+    local get_diff_revision = git.get_diff_revision_with_line_stats
+    git.get_diff_revision_with_line_stats = function(revision, root, callback, ...)
+      return get_diff_revision(revision, root, without_directory_links(root, callback), ...)
+    end
+
     -- CodeDiff can reuse an unlisted real buffer. List it in the destination
     -- tab so AstroNvim receives BufAdd there even if the buffer was visible.
     local panes = require "codediff.ui.view.actions.panes"

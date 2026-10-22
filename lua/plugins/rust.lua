@@ -36,21 +36,30 @@ end
 
 local analyzer_state = {}
 local pending_dependency_starts = {}
+local workspace_starts = {}
 
 local rust_target_scopes = {
-  default = { allTargets = false, extraArgs = { "--no-deps" } },
-  test = { allTargets = false, extraArgs = { "--no-deps", "--tests" } },
-  all = { allTargets = true, extraArgs = { "--no-deps" } },
+  package = { workspace = false, allTargets = false, extraArgs = {} },
+  package_tests = { workspace = false, allTargets = true, extraArgs = {} },
+  workspace = { workspace = true, allTargets = false, extraArgs = {} },
+  workspace_tests = { workspace = true, allTargets = true, extraArgs = {} },
+  tests = { workspace = false, allTargets = false, extraArgs = { "--tests" } },
 }
 
+local function configure_analyzer(client, changes)
+  local settings = vim.deepcopy(client.settings or client.config.settings or {})
+  settings["rust-analyzer"] = vim.tbl_deep_extend("force", settings["rust-analyzer"] or {}, changes)
+  client.settings = settings
+  client:notify("workspace/didChangeConfiguration", { settings = settings })
+end
+
 local function set_rust_target(bufnr, scope)
-  scope = scope == "" and "default" or scope
-  scope = scope == "normal" and "default" or scope
-  scope = scope == "tests" and "test" or scope
+  local aliases = { default = "workspace_tests", normal = "package", test = "tests", all = "workspace_tests" }
+  scope = aliases[scope] or scope
 
   local check = rust_target_scopes[scope]
   if not check then
-    vim.notify("RustTarget: use default, test, or all", vim.log.levels.ERROR)
+    vim.notify("RustTarget: unknown target " .. scope, vim.log.levels.ERROR)
     return
   end
 
@@ -63,8 +72,102 @@ local function set_rust_target(bufnr, scope)
     return
   end
 
-  require("rustaceanvim.lsp").set_config(bufnr, { check = vim.deepcopy(check) })
+  for _, client in ipairs(clients) do
+    configure_analyzer(client, { check = vim.deepcopy(check) })
+  end
+
   vim.notify("Rust target: " .. scope)
+end
+
+local function pick_rust_platform(bufnr)
+  local client = vim.lsp.get_clients({ bufnr = bufnr, name = "rust-analyzer" })[1]
+  if not client then
+    vim.notify("RustPlatform: rust-analyzer is not attached", vim.log.levels.WARN)
+    return
+  end
+
+  local cwd = toolchain_cwd(vim.api.nvim_buf_get_name(bufnr))
+  vim.system({ "rustup", "target", "list", "--installed" }, { cwd = cwd, text = true }, function(result)
+    vim.schedule(function()
+      if result.code ~= 0 then
+        vim.notify("Could not list Rust platforms:\n" .. vim.trim(result.stderr or ""), vim.log.levels.ERROR)
+        return
+      end
+      if client:is_stopped() then return end
+
+      local current = vim.tbl_get(client.settings or {}, "rust-analyzer", "cargo", "target")
+      local choices = { { label = "Native / Cargo default", target = vim.NIL } }
+      for target in (result.stdout or ""):gmatch "[^\r\n]+" do
+        table.insert(choices, { label = target, target = target })
+      end
+
+      vim.ui.select(choices, {
+        kind = "rust_platform",
+        prompt = "Rust platform to browse",
+        format_item = function(choice)
+          local selected = (current == nil and choice.target == vim.NIL) or current == choice.target
+          return (selected and "● " or "  ") .. choice.label
+        end,
+      }, function(choice)
+        if not choice or client:is_stopped() then return end
+
+        configure_analyzer(client, { cargo = { target = choice.target } })
+        vim.notify("Rust platform: " .. choice.label .. ". Reloading workspace…")
+      end)
+    end)
+  end)
+end
+
+local function pick_rust_target(bufnr)
+  local client = vim
+    .iter(vim.lsp.get_clients { bufnr = bufnr })
+    :find(function(item) return item.name == "rust-analyzer" end)
+  if not client then
+    vim.notify("RustTarget: rust-analyzer is not attached to this buffer", vim.log.levels.WARN)
+    return
+  end
+
+  local settings = (client.settings or {})["rust-analyzer"] or {}
+  local current = settings.check
+  local features = vim.tbl_get(settings, "cargo", "features")
+
+  local choices = {
+    { label = "Everything", scope = "workspace_tests" },
+    { label = "Everything (no tests)", scope = "workspace" },
+    { label = "This crate", scope = "package_tests" },
+    { label = "This crate (no tests)", scope = "package" },
+    { label = "Tests only (this crate)", scope = "tests" },
+    { label = "Cargo features: default", features = {} },
+    { label = "Cargo features: all", features = "all" },
+  }
+
+  vim.ui.select(choices, {
+    kind = "rust_target",
+    prompt = "Rust checks and browsing",
+    format_item = function(choice)
+      if choice.features then
+        local selected = vim.deep_equal(features or {}, choice.features)
+        return (selected and "● " or "  ") .. choice.label
+      end
+
+      local target = rust_target_scopes[choice.scope]
+      local selected = current
+        and current.workspace == target.workspace
+        and current.allTargets == target.allTargets
+        and vim.deep_equal(current.extraArgs or {}, target.extraArgs)
+
+      return (selected and "● " or "  ") .. choice.label
+    end,
+  }, function(choice)
+    if not choice or client:is_stopped() then return end
+
+    if choice.features then
+      configure_analyzer(client, { cargo = { features = choice.features } })
+      vim.notify(choice.label .. ". Reloading workspace…")
+    else
+      set_rust_target(bufnr, choice.scope)
+    end
+  end)
 end
 
 local function start_buffer(bufnr)
@@ -76,6 +179,117 @@ local function start_buffer(bufnr)
   then
     require("rustaceanvim.lsp").start(bufnr)
   end
+end
+
+local function start_workspace_from_cwd()
+  local cwd = vim.fn.getcwd()
+  local manifest = vim.fs.find("Cargo.toml", { path = cwd, upward = true })[1]
+  if not manifest then return end
+
+  local directory = vim.fs.dirname(manifest)
+  if workspace_starts[directory] then return end
+
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if
+      vim.api.nvim_buf_is_loaded(bufnr)
+      and vim.bo[bufnr].filetype == "rust"
+      and vim.startswith(name, directory .. "/")
+    then
+      return
+    end
+  end
+
+  workspace_starts[directory] = true
+  vim.system({ "cargo", "metadata", "--no-deps", "--format-version", "1", "--offline" }, {
+    cwd = directory,
+    text = true,
+  }, function(result)
+    vim.schedule(function()
+      if result.code ~= 0 then
+        workspace_starts[directory] = nil
+        vim.notify(
+          "Could not start rust-analyzer for " .. directory .. ":\n" .. vim.trim(result.stderr or ""),
+          vim.log.levels.WARN
+        )
+        return
+      end
+
+      local ok, metadata = pcall(vim.json.decode, result.stdout)
+      if not ok then
+        workspace_starts[directory] = nil
+        vim.notify("Could not read Cargo metadata for " .. directory, vim.log.levels.WARN)
+        return
+      end
+
+      local root = metadata.workspace_root
+      if root ~= directory and workspace_starts[root] then return end
+      workspace_starts[root] = true
+
+      for _, client in ipairs(vim.lsp.get_clients { name = "rust-analyzer" }) do
+        if client.root_dir == root then return end
+      end
+
+      local members = {}
+      for _, id in ipairs(metadata.workspace_members or {}) do
+        members[id] = true
+      end
+
+      for _, package in ipairs(metadata.packages or {}) do
+        if members[package.id] then
+          for _, target in ipairs(package.targets or {}) do
+            local source = target.src_path
+            if source and vim.uv.fs_stat(source) and source:match "%.rs$" then
+              local bufnr = vim.fn.bufadd(source)
+              if not vim.api.nvim_buf_is_loaded(bufnr) and not vim.bo[bufnr].buflisted then
+                local swapfile = vim.bo[bufnr].swapfile
+                vim.bo[bufnr].swapfile = false
+                vim.api.nvim_create_autocmd("BufWinEnter", {
+                  buffer = bufnr,
+                  callback = function()
+                    if not vim.bo[bufnr].buflisted then return end
+
+                    vim.bo[bufnr].swapfile = swapfile
+                    return true
+                  end,
+                })
+              end
+
+              vim.fn.bufload(bufnr)
+              if vim.bo[bufnr].filetype == "" then
+                vim.api.nvim_buf_call(bufnr, function() vim.bo.filetype = "rust" end)
+              else
+                start_buffer(bufnr)
+              end
+              return
+            end
+          end
+        end
+      end
+
+      workspace_starts[directory] = nil
+      workspace_starts[root] = nil
+      vim.notify("Could not find a Rust source file in " .. directory, vim.log.levels.WARN)
+    end)
+  end)
+end
+
+local function rust_target_buffer()
+  local current = vim.api.nvim_get_current_buf()
+  if #vim.lsp.get_clients { bufnr = current, name = "rust-analyzer" } > 0 then return current end
+
+  local name = vim.api.nvim_buf_get_name(current)
+  local path = vim.bo[current].buftype == "" and name ~= "" and name or vim.fn.getcwd()
+  for _, client in ipairs(vim.lsp.get_clients { name = "rust-analyzer" }) do
+    local root = client.root_dir
+    if root and (path == root or vim.startswith(path, root .. "/")) then
+      for bufnr in pairs(client.attached_buffers) do
+        if vim.api.nvim_buf_is_valid(bufnr) then return bufnr end
+      end
+    end
+  end
+
+  return current
 end
 
 local function has_initialized_analyzer()
@@ -94,17 +308,13 @@ local function has_project_rust_buffer()
   )
 end
 
-local function defer_dependency_start(bufnr, attempt)
-  if pending_dependency_starts[bufnr] and not attempt then return end
-  pending_dependency_starts[bufnr] = true
-  attempt = attempt or 1
-
-  if has_initialized_analyzer() or not has_project_rust_buffer() or attempt >= 100 then
-    pending_dependency_starts[bufnr] = nil
+local function start_dependency_buffer(bufnr)
+  if has_initialized_analyzer() or not has_project_rust_buffer() then
     start_buffer(bufnr)
-  else
-    vim.defer_fn(function() defer_dependency_start(bufnr, attempt + 1) end, 100)
+    return
   end
+
+  pending_dependency_starts[bufnr] = true
 end
 
 local function start_waiting_buffers(buffers)
@@ -121,7 +331,7 @@ local function start_waiting_buffers(buffers)
   end
 
   for _, bufnr in ipairs(dependency_buffers) do
-    defer_dependency_start(bufnr)
+    start_dependency_buffer(bufnr)
   end
 end
 
@@ -198,8 +408,57 @@ end
 return {
   "mrcjkb/rustaceanvim",
   dependencies = { "AstroNvim/astrolsp" },
+  init = function()
+    local group = vim.api.nvim_create_augroup("rust_workspace_start", { clear = true })
+    vim.api.nvim_create_autocmd({ "VimEnter", "DirChanged" }, {
+      group = group,
+      callback = start_workspace_from_cwd,
+    })
+    vim.api.nvim_create_autocmd("LspAttach", {
+      group = group,
+      callback = function(event)
+        local client = vim.lsp.get_client_by_id(event.data.client_id)
+        if not client or client.name ~= "rust-analyzer" then return end
+
+        local pending = pending_dependency_starts
+        pending_dependency_starts = {}
+        for bufnr in pairs(pending) do
+          start_buffer(bufnr)
+        end
+      end,
+    })
+
+    vim.api.nvim_create_user_command("RustTarget", function(args)
+      local bufnr = rust_target_buffer()
+      if args.args == "" then
+        pick_rust_target(bufnr)
+      else
+        set_rust_target(bufnr, args.args)
+      end
+    end, {
+      nargs = "?",
+      desc = "Choose Rust check scope and features",
+      complete = function(lead)
+        return vim.tbl_filter(
+          function(scope) return vim.startswith(scope, lead) end,
+          { "workspace_tests", "workspace", "package_tests", "package", "tests" }
+        )
+      end,
+    })
+    vim.api.nvim_create_user_command("RustPlatform", function() pick_rust_platform(rust_target_buffer()) end, {
+      desc = "Choose Rust platform for browsing",
+    })
+  end,
   opts = function(_, opts)
     opts.server = opts.server or {}
+    opts.tools = opts.tools or {}
+    -- Nextest writes no JUnit file when compilation fails, and the adapter loses the Cargo error.
+    opts.tools.enable_nextest = false
+    opts.tools.code_actions = opts.tools.code_actions or {}
+    opts.tools.code_actions.ui_select_fallback = true
+    opts.dap = opts.dap or {}
+    opts.dap.autoload_configurations = false
+
     local command_cwd
 
     -- TEMP MONKEY PATCH: current rust-analyzer releases log a warning for
@@ -212,24 +471,6 @@ return {
       if default_on_attach then default_on_attach(client, bufnr) end
 
       client.server_capabilities.semanticTokensProvider = nil
-
-      if not vim.api.nvim_buf_get_commands(bufnr, {})["RustTarget"] then
-        vim.api.nvim_buf_create_user_command(
-          bufnr,
-          "RustTarget",
-          function(args) set_rust_target(bufnr, args.args) end,
-          {
-            nargs = "?",
-            desc = "Set Clippy target scope",
-            complete = function(lead)
-              return vim.tbl_filter(
-                function(scope) return vim.startswith(scope, lead) end,
-                { "default", "test", "all" }
-              )
-            end,
-          }
-        )
-      end
     end
 
     opts.server.auto_attach = function(bufnr)
@@ -246,7 +487,7 @@ return {
         and has_project_rust_buffer()
         and not has_initialized_analyzer()
       then
-        defer_dependency_start(bufnr)
+        start_dependency_buffer(bufnr)
         return false
       end
 
@@ -269,9 +510,7 @@ return {
       local state = analyzer_state[vim.fs.normalize(cwd)]
       if state and state.executable and state.executable ~= "" then return { state.executable } end
 
-      local result = vim.system({ "rustup", "which", "rust-analyzer" }, { cwd = cwd, text = true }):wait()
-      local executable = result.code == 0 and vim.trim(result.stdout or "") or ""
-      return { executable ~= "" and executable or "rust-analyzer" }
+      return { "rust-analyzer" }
     end
 
     opts.server.settings = function(project_root, default_settings)

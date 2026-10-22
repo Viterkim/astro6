@@ -21,7 +21,7 @@ vim.api.nvim_create_autocmd("BufHidden", {
   end,
 })
 
-vim.api.nvim_create_autocmd("BufWinEnter", {
+vim.api.nvim_create_autocmd({ "FileType", "BufWinEnter" }, {
   pattern = "*",
   desc = "Disable auto-comment formatting for this buffer",
   callback = function() vim.opt_local.formatoptions:remove { "c", "r", "o" } end,

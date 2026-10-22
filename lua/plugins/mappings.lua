@@ -44,8 +44,8 @@ return {
           desc = "Jump Forward",
         },
         ["l"] = { "o<esc>", desc = "New Line Below" },
-        ["r"] = { function() require("funcs").page_scroll(true) end, desc = "Page Up" },
-        ["s"] = { function() require("funcs").page_scroll(false) end, desc = "Page Down" },
+        ["r"] = { function() require("funcs").page_scroll(true) end, desc = "Scroll up one third" },
+        ["s"] = { function() require("funcs").page_scroll(false) end, desc = "Scroll down one third" },
         ["S"] = { function() require("astrocore.buffer").nav(vim.v.count1) end, desc = "Next buffer" },
         ["R"] = { function() require("astrocore.buffer").nav(-vim.v.count1) end, desc = "Prev buffer" },
         ["]b"] = { function() require("astrocore.buffer").nav(vim.v.count1) end, desc = "Next buffer" },
@@ -168,10 +168,13 @@ return {
         },
         ["<leader>it"] = {
           function()
-            vim.lsp.buf.hover()
-            vim.lsp.buf.hover()
+            if vim.bo.filetype == "rust" then
+              vim.cmd "RustLsp codeAction"
+            else
+              vim.lsp.buf.code_action()
+            end
           end,
-          desc = "Hover Enter",
+          desc = "Code actions",
         },
 
         -- leader r (Git browsing)
@@ -472,8 +475,8 @@ return {
         },
 
         -- other
-        ["r"] = { "<C-u>" },
-        ["s"] = { "<C-d>" },
+        ["r"] = { function() require("funcs").page_scroll(true) end, desc = "Scroll up one third" },
+        ["s"] = { function() require("funcs").page_scroll(false) end, desc = "Scroll down one third" },
         ["j"] = { "<esc>", desc = "Normal Mode" },
         ["p"] = {
           function() return require("funcs").visual_paste_keep_regs "p" end,

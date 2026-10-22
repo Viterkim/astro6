@@ -79,21 +79,138 @@ function M.get_visual_one_line()
   return vim.trim(text)
 end
 
-function M.centered_lsp_picker(source)
-  require("snacks").picker[source] {
-    -- Results still appear immediately, but do not show an empty picker while
-    -- a language server is busy answering the request.
-    show_delay = math.huge,
-    confirm = function(picker, item, action)
-      require("snacks.picker.actions").jump(picker, item, action)
-      -- Snacks finishes its auto-confirm asynchronously, and can restore the
-      -- main view after the jump. Center after that teardown has settled.
-      vim.defer_fn(function()
-        local win = vim.api.nvim_get_current_win()
-        if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_config(win).relative == "" then
-          vim.api.nvim_win_call(win, function() vim.cmd "normal! zz" end)
+local function blocking_lsp_items(method, label)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local win = vim.api.nvim_get_current_win()
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local clients = vim.lsp.get_clients { bufnr = bufnr, method = method }
+  if #clients == 0 then
+    vim.notify("No language server ready for " .. label, vim.log.levels.WARN)
+    return
+  end
+
+  vim.api.nvim_echo({ { "Looking for " .. label .. "…", "MoreMsg" } }, false, {})
+  vim.cmd.redraw()
+
+  local responses, err = vim.lsp.buf_request_sync(bufnr, method, function(client)
+    local params = vim.lsp.util.make_position_params(win, client.offset_encoding)
+    if method == "textDocument/references" then params.context = { includeDeclaration = true } end
+    return params
+  end, 60000)
+  vim.api.nvim_echo({}, false, {})
+
+  if not responses then
+    local message = err == "timeout" and "No reply after 60 seconds" or err
+    vim.notify("Lookup for " .. label .. ": " .. (message or "request failed"), vim.log.levels.WARN)
+    return
+  end
+
+  local items, seen, errors = {}, {}, {}
+  for _, client in ipairs(clients) do
+    local response = responses[client.id]
+    if response and response.err then
+      table.insert(errors, client.name .. ": " .. response.err.message)
+    elseif response and response.result and response.result ~= vim.NIL then
+      local locations = vim.islist(response.result) and response.result or { response.result }
+      for _, location in ipairs(vim.lsp.util.locations_to_items(locations, client.offset_encoding)) do
+        local key = location.filename .. ":" .. location.lnum .. ":" .. location.col
+        local current = method == "textDocument/references"
+          and location.filename == name
+          and location.lnum <= cursor[1]
+          and (location.end_lnum or location.lnum) >= cursor[1]
+
+        if not current and not seen[key] then
+          seen[key] = true
+          table.insert(items, {
+            file = location.filename,
+            pos = { location.lnum, location.col - 1 },
+            end_pos = { location.end_lnum, location.end_col - 1 },
+            text = location.filename .. " " .. location.text,
+            line = location.text,
+            location = location.user_data,
+          })
         end
-      end, 100)
+      end
+    end
+  end
+
+  if #errors > 0 then vim.notify(table.concat(errors, "\n"), vim.log.levels.ERROR) end
+  if #items == 0 then
+    if #errors == 0 then
+      local working = vim.iter(clients):any(
+        function(client) return client.progress and client.progress.pending and next(client.progress.pending) ~= nil end
+      )
+      local message = working and "No " .. label .. " returned yet. Language server is still working."
+        or "No " .. label .. " found"
+      vim.notify(message, vim.log.levels.INFO)
+    end
+    return
+  end
+
+  local message = #items == 1 and (method == "textDocument/references" and "Reference found" or "Definition found")
+    or tostring(#items) .. " " .. label .. " found"
+  vim.api.nvim_echo({ { message, "MoreMsg" } }, false, {})
+  return items
+end
+
+function M.centered_lsp_picker(source)
+  local items
+  if source == "lsp_definitions" or source == "lsp_references" then
+    local references = source == "lsp_references"
+    items = blocking_lsp_items(
+      references and "textDocument/references" or "textDocument/definition",
+      references and "references" or "definitions"
+    )
+    if not items then return end
+
+    if #items == 1 then
+      local item = items[1]
+      local location = item.location
+      local bufnr = vim.uri_to_bufnr(location.uri or location.targetUri)
+
+      vim.cmd "normal! m'"
+      local from = vim.fn.getpos "."
+      from[1] = vim.api.nvim_get_current_buf()
+      vim.fn.settagstack(0, { items = { { tagname = vim.fn.expand "<cword>", from = from } } }, "t")
+
+      local win = vim.fn.win_findbuf(bufnr)[1]
+      if win then vim.api.nvim_set_current_win(win) end
+
+      -- :buffer runs the normal swap prompt, unlike nvim_win_set_buf.
+      vim.bo[bufnr].buflisted = true
+      vim.cmd.buffer(bufnr)
+      if vim.api.nvim_get_current_buf() ~= bufnr then return end
+
+      vim.api.nvim_win_set_cursor(0, item.pos)
+      vim.cmd "normal! zzzv"
+      return
+    end
+  end
+
+  local picker = require("snacks").picker[source] {
+    find = false,
+    show_delay = 0,
+    finder = items and function() return items end or nil,
+    confirm = function(picker, item, action)
+      picker:norm(function()
+        require("snacks.picker.actions").jump(picker, item, action)
+        local win = vim.api.nvim_get_current_win()
+        vim.schedule(function()
+          if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_config(win).relative == "" then
+            vim.api.nvim_win_call(win, function() vim.cmd "normal! zz" end)
+          end
+        end)
+      end)
+    end,
+  }
+
+  picker:find {
+    on_done = function()
+      if not picker.closed and not picker:is_active() and picker.opts.auto_confirm and picker:count() == 1 then
+        picker:action "confirm"
+        picker:close()
+      end
     end,
   }
 end
@@ -342,6 +459,7 @@ end
 local function looks_like_match_arms_action(action)
   local title = (action.title or ""):lower()
   return title:find("fill match arms", 1, true) ~= nil
+    or title:find("missing match arm", 1, true) ~= nil
 end
 
 local function ensure_match_line_has_braces()
@@ -407,47 +525,75 @@ local function replace_generated_todos_with_braces(open_pos)
   vim.api.nvim_buf_set_lines(0, start_row - 1, end_row, false, lines)
 end
 
-local function apply_first_matching_code_action(filter, context, timeout_ms)
+local function apply_fill_match_arms_action(open_pos)
   local bufnr = vim.api.nvim_get_current_buf()
-  local clients = vim.lsp.get_clients { bufnr = bufnr, method = "textDocument/codeAction" }
+  local winnr = vim.api.nvim_get_current_win()
+  local client = vim.iter(vim.lsp.get_clients { bufnr = bufnr, method = "textDocument/codeAction" }):find(
+    function(item) return item.name == "rust-analyzer" end
+  )
 
-  if #clients == 0 then
+  if not client then
     vim.notify("No LSP code actions available", vim.log.levels.WARN)
-    return false
+    return
   end
 
-  for _, client in ipairs(clients) do
-    local params = {
-      textDocument = vim.lsp.util.make_text_document_params(bufnr),
-      range = vim.lsp.util.make_range_params(0, client.offset_encoding).range,
-      context = vim.tbl_deep_extend("force", {
-        diagnostics = vim.diagnostic.get(bufnr),
-      }, context or {}),
-    }
+  local params = {
+    textDocument = vim.lsp.util.make_text_document_params(bufnr),
+    range = vim.lsp.util.make_range_params(0, client.offset_encoding).range,
+    context = {
+      diagnostics = vim.lsp.diagnostic.from(vim.diagnostic.get(bufnr, { lnum = open_pos.row - 1 })),
+    },
+  }
 
-    local resp = client:request_sync("textDocument/codeAction", params, timeout_ms or 3000, bufnr)
-    local actions = resp and resp.result or {}
+  local function apply(action)
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    if not action.edit and not action.command then
+      vim.notify("Fill match arms returned no edit", vim.log.levels.WARN)
+      return
+    end
 
-    for _, action in ipairs(actions) do
-      if filter(action, client) then
-        if action.edit then vim.lsp.util.apply_workspace_edit(action.edit, client.offset_encoding) end
+    if action.edit then vim.lsp.util.apply_workspace_edit(action.edit, client.offset_encoding) end
 
-        if type(action.command) == "table" then
-          client:exec_cmd(action.command, { bufnr = bufnr })
-        elseif type(action.command) == "string" then
-          client:exec_cmd({
-            title = action.title,
-            command = action.command,
-            arguments = action.arguments,
-          }, { bufnr = bufnr })
-        end
+    if type(action.command) == "table" then
+      client:exec_cmd(action.command, { bufnr = bufnr })
+    elseif type(action.command) == "string" then
+      client:exec_cmd({
+        title = action.title,
+        command = action.command,
+        arguments = action.arguments,
+      }, { bufnr = bufnr })
+    end
 
-        return true
-      end
+    if vim.api.nvim_win_is_valid(winnr) and vim.api.nvim_win_get_buf(winnr) == bufnr then
+      vim.api.nvim_win_call(winnr, function() replace_generated_todos_with_braces(open_pos) end)
     end
   end
 
-  return false
+  client:request("textDocument/codeAction", params, function(err, actions)
+    if err then
+      vim.notify(err.message or tostring(err), vim.log.levels.ERROR)
+      return
+    end
+
+    local action = vim.iter(actions or {}):find(looks_like_match_arms_action)
+    if not action then
+      vim.notify("No fill match arms action found", vim.log.levels.INFO)
+      return
+    end
+
+    if not action.edit and not action.command and client:supports_method("codeAction/resolve") then
+      client:request("codeAction/resolve", action, function(resolve_err, resolved)
+        if resolve_err or not resolved then
+          vim.notify(resolve_err and resolve_err.message or "Could not resolve fill match arms", vim.log.levels.ERROR)
+          return
+        end
+
+        apply(resolved)
+      end, bufnr)
+    else
+      apply(action)
+    end
+  end, bufnr)
 end
 
 function M.rust_fill_match_arms_smart()
@@ -458,13 +604,7 @@ function M.rust_fill_match_arms_smart()
   local open_pos = ensure_match_line_has_braces()
   if not open_pos then return end
 
-  local ok = apply_first_matching_code_action(looks_like_match_arms_action)
-  if not ok then
-    vim.notify("No fill match arms action found", vim.log.levels.INFO)
-    return
-  end
-
-  replace_generated_todos_with_braces(open_pos)
+  apply_fill_match_arms_action(open_pos)
 end
 
 -- Selection and register helpers.
@@ -828,11 +968,10 @@ function M.open_codediff(args, root)
 end
 
 function M.page_scroll(up)
-  local half_page = math.max(1, math.floor(vim.api.nvim_win_get_height(0) / 2))
-  local amount = vim.v.count > 0 and vim.v.count or half_page
+  local third_page = math.max(1, math.floor(vim.api.nvim_win_get_height(0) / 3))
+  local amount = vim.v.count > 0 and vim.v.count or third_page
 
-  -- A count on CTRL-U/CTRL-D becomes the persistent 'scroll' value. Honor the
-  -- count for this movement, then restore the uncounted half-page behavior.
+  -- A count on CTRL-U/CTRL-D changes the persistent 'scroll' value, so reset it afterward.
   vim.cmd.normal { args = { tostring(amount) .. string.char(up and 21 or 4) }, bang = true }
   vim.wo.scroll = 0
 end
