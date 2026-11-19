@@ -74,6 +74,19 @@ local function configure_grep_tests(opts)
   return opts
 end
 
+local function indent_buffer(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) or require("astrocore.buffer").is_large(bufnr) then return false end
+  if vim.bo[bufnr].buflisted then return true end
+
+  -- CodeDiff can show buffers without listing them in the normal tabline.
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if vim.bo[bufnr].buftype ~= "" and not vim.startswith(name, "codediff://") then return false end
+  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if vim.w[win].codediff_restore == 1 then return true end
+  end
+  return false
+end
+
 local function git_picker_layout(list_height)
   return {
     layout = {
@@ -131,6 +144,17 @@ return {
   end,
   opts = {
     input = { enabled = false },
+
+    indent = {
+      filter = function(bufnr)
+        return indent_buffer(bufnr) and vim.g.snacks_indent ~= false and vim.b[bufnr].snacks_indent ~= false
+      end,
+    },
+    scope = {
+      filter = function(bufnr)
+        return indent_buffer(bufnr) and vim.g.snacks_scope ~= false and vim.b[bufnr].snacks_scope ~= false
+      end,
+    },
 
     image = {
       enabled = false,

@@ -184,8 +184,8 @@ return {
           desc = "Open or continue CodeDiff",
         },
         ["<leader>rw"] = {
-          function() require("funcs").follow_codediff() end,
-          desc = "Follow current file into CodeDiff",
+          function() require("funcs").close_codediff() end,
+          desc = "Close all CodeDiff tabs",
         },
         ["<leader>rm"] = {
           function() require("funcs").open_codediff_main() end,
@@ -250,7 +250,7 @@ return {
             vim.ui.select({
               "── Open views ───────────────────────────────────",
               "<Leader>rr   Open or continue CodeDiff",
-              "<Leader>rw   Open current file at its change",
+              "<Leader>rw   Close all CodeDiff tabs and forget the comparison",
               "<Leader>rm   Compare branch with main/master",
               "<Leader>rc   Choose a commit and show only that commit diff",
               "<Leader>ro   Preview current file changes",
@@ -271,7 +271,7 @@ return {
               "j / J        Jump back / forward",
               "e / n (diff) Next / previous change across files",
               "u / l        Next / previous changed file",
-              "i (diff)     Open real file and close CodeDiff",
+              "i (diff)     Open real file, <Leader>rr returns to the diff",
               "gt / gT      Switch between editor and CodeDiff",
               "t            Toggle side-by-side / inline view",
               "gc           Toggle compact unchanged sections",

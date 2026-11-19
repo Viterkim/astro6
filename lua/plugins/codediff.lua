@@ -1,6 +1,8 @@
 ---@type LazySpec
 return {
   "esmuellert/codediff.nvim",
+  -- Keep the UI patches lazy until a CodeDiff command is used.
+  event = function() return {} end,
   opts = {
     diff = {
       cycle_hunks_across_files = true,
@@ -20,7 +22,6 @@ return {
         next_file = "u",
         prev_file = "l",
         open_in_prev_tab = "i",
-        close_on_open_in_prev_tab = true,
         toggle_explorer = "y",
         focus_explorer = "o",
       },
@@ -47,6 +48,62 @@ return {
     local view_render = require "codediff.ui.view.render"
     local codediff_config = require "codediff.config"
     local pending = {}
+
+    -- Panel options must stay local or new editor windows inherit the
+    -- explorer's missing numbers and signs. Upstream issue #579.
+    local Split = require "codediff.ui.lib.split"
+    function Split:_apply_win_options()
+      if not self.winid or not vim.api.nvim_win_is_valid(self.winid) then return end
+      for name, value in pairs(self._win_options) do
+        vim.api.nvim_set_option_value(name, value, { win = self.winid, scope = "local" })
+      end
+    end
+
+    -- The diff panes also change the inheritable list/cursorline defaults.
+    -- Keep their local appearance while handing normal windows their defaults.
+    local view = require "codediff.ui.view"
+    local create_view = view.create
+    view.create = function(...)
+      local defaults = {}
+      for _, name in ipairs { "list", "cursorline" } do
+        defaults[name] = vim.api.nvim_get_option_value(name, { win = 0, scope = "global" })
+      end
+
+      local result = create_view(...)
+      local win = result and (result.modified_win or result.original_win)
+      if win and vim.api.nvim_win_is_valid(win) then
+        for _, pane in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(win))) do
+          for name, value in pairs(defaults) do
+            vim.api.nvim_set_option_value(name, value, { win = pane, scope = "global" })
+          end
+        end
+      end
+      return result
+    end
+
+    -- CodeDiff adds leader mappings after WhichKey attached to the buffer.
+    -- Rebuild its trigger after mapping changes, including tab restoration.
+    -- Remove when upstream PR #586 is included.
+    local keymap_slots = require "codediff.keymap.slots"
+    local which_key_pending = {}
+    for _, action in ipairs { "claim", "release", "set_active" } do
+      local change_mapping = keymap_slots[action]
+      keymap_slots[action] = function(owner, bufnr, ...)
+        local result = change_mapping(owner, bufnr, ...)
+        local which_key = package.loaded["which-key.buf"]
+        if bufnr and which_key and require("which-key.config").loaded and not which_key_pending[bufnr] then
+          which_key_pending[bufnr] = true
+          vim.schedule(function()
+            which_key_pending[bufnr] = nil
+            if vim.api.nvim_buf_is_valid(bufnr) then
+              which_key.clear { buf = bufnr }
+              which_key.get { buf = bufnr, mode = "n" }
+            end
+          end)
+        end
+        return result
+      end
+    end
 
     -- A directory symlink is one Git entry, but :edit opens its target as a
     -- directory and Neo-tree replaces the diff pane. Skip those entries.
@@ -76,23 +133,69 @@ return {
     git.get_diff_revision_with_line_stats = function(revision, root, callback, ...)
       return get_diff_revision(revision, root, without_directory_links(root, callback), ...)
     end
+    local get_diff_revisions = git.get_diff_revisions_with_line_stats
+    git.get_diff_revisions_with_line_stats = function(original, modified, root, callback, ...)
+      return get_diff_revisions(original, modified, root, without_directory_links(root, callback), ...)
+    end
+    local get_diff_staged = git.get_diff_staged
+    git.get_diff_staged = function(revision, root, callback, ...)
+      return get_diff_staged(revision, root, without_directory_links(root, callback), ...)
+    end
 
-    -- CodeDiff can reuse an unlisted real buffer. List it in the destination
-    -- tab so AstroNvim receives BufAdd there even if the buffer was visible.
+    -- :edit on a revision's path can ask to discard changes when the editor
+    -- already has that file open. Switch to its buffer and keep those edits.
     local panes = require "codediff.ui.view.actions.panes"
     local open_in_prev_tab = panes.open_in_prev_tab
     panes.open_in_prev_tab = function(ctx)
-      local result = open_in_prev_tab(ctx)
-      local buf = vim.api.nvim_get_current_buf()
-      if
-        vim.api.nvim_get_current_tabpage() ~= ctx.tabpage
-        and vim.bo[buf].buftype == ""
-        and vim.api.nvim_buf_get_name(buf) ~= ""
-      then
-        vim.bo[buf].buflisted = true
+      local preview = vim.api.nvim_get_current_buf()
+      local original, modified = lifecycle.get_paths(ctx.tabpage)
+      local path = preview == ctx.modified_bufnr and modified or preview == ctx.original_bufnr and original
+      if not path or path.absolute == "" then return open_in_prev_tab(ctx) end
+
+      local cursor = vim.api.nvim_win_get_cursor(0)
+      local editor_tab
+      for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+        if tab == ctx.tabpage then break end
+        if not lifecycle.get_session(tab) then editor_tab = tab end
       end
-      return result
+      if editor_tab then
+        vim.api.nvim_set_current_tabpage(editor_tab)
+      else
+        vim.cmd "-tabnew"
+      end
+
+      local buf = vim.fn.bufadd(path.absolute)
+      if vim.api.nvim_get_current_buf() ~= buf then vim.cmd.buffer(buf) end
+      if vim.api.nvim_get_current_buf() ~= buf then return end
+
+      vim.bo[buf].buflisted = true
+      if not vim.bo[buf].modified and vim.fn.filereadable(path.absolute) == 1 then
+        vim.cmd("silent checktime " .. buf)
+      end
+      cursor[1] = math.min(cursor[1], vim.api.nvim_buf_line_count(buf))
+      vim.api.nvim_win_set_cursor(0, cursor)
+      vim.cmd "normal! zz"
     end
+
+    -- A one-file panel selects the same file when cycling. Report that
+    -- no file changed so hunk navigation can wrap within the current file.
+    local panel_data = require "codediff.ui.refresh.panel"
+    local function file_navigation(move)
+      return function()
+        local tabpage = vim.api.nvim_get_current_tabpage()
+        local session = lifecycle.get_session(tabpage)
+        local panel = lifecycle.get_panel(tabpage)
+        if not panel then return move() end
+
+        local selection = panel.data.current_selection
+        move()
+        local changed = not panel_data.same_selection(selection, panel.data.current_selection)
+        if not changed and session then session.pending_cursor_landing = nil end
+        return changed
+      end
+    end
+    navigation.next_file = file_navigation(navigation.next_file)
+    navigation.prev_file = file_navigation(navigation.prev_file)
 
     -- A cross-file hunk jump changes the explorer selection before the new
     -- diff has finished loading. Another e/n in that gap can navigate using
@@ -138,6 +241,7 @@ return {
     -- TEMP MONKEY PATCH: CodeDiff forces wrap off while rendering side-by-side
     -- views. Re-enable it after scrollbind is established so selecting or
     -- reloading a file does not leave the diff panes unwrapped.
+    -- Wrapped rows can still drift against its virtual filler lines (#50).
     local function enable_word_wrap(win)
       if not win or not vim.api.nvim_win_is_valid(win) then return end
       vim.wo[win].wrap = true
@@ -268,16 +372,71 @@ return {
     local group = vim.api.nvim_create_augroup("viter_codediff", { clear = true })
     local wrap_enter_autocmds = {}
 
+    -- Native scrollbind only follows the current window. A mouse wheel can
+    -- scroll another pane without focusing it. Upstream PR #570.
+    vim.api.nvim_create_autocmd("WinScrolled", {
+      group = group,
+      callback = function()
+        local session = lifecycle.get_session(vim.api.nvim_get_current_tabpage())
+        if not session then return end
+
+        local focused = vim.api.nvim_get_current_win()
+        for id, delta in pairs(vim.v.event) do
+          local win = tonumber(id)
+          local pane = win and (win == session.original_win or win == session.modified_win or win == session.result_win)
+          if
+            pane
+            and win ~= focused
+            and delta.topline ~= 0
+            and vim.api.nvim_win_is_valid(win)
+            and vim.wo[win].scrollbind
+          then
+            vim.api.nvim_win_call(win, function() vim.cmd [[execute "normal! \<Ignore>"]] end)
+          end
+        end
+      end,
+    })
+
     local function keep_diff_windows_wrapped(tabpage)
       if wrap_enter_autocmds[tabpage] then pcall(vim.api.nvim_del_autocmd, wrap_enter_autocmds[tabpage]) end
-      wrap_enter_autocmds[tabpage] = vim.api.nvim_create_autocmd({ "BufWinEnter", "BufEnter", "WinEnter", "FileType" }, {
-        group = group,
-        callback = function()
-          if vim.api.nvim_get_current_tabpage() ~= tabpage then return end
-          local win = vim.api.nvim_get_current_win()
-          if vim.w[win].codediff_restore == 1 then enable_word_wrap(win) end
-        end,
-      })
+      wrap_enter_autocmds[tabpage] = vim.api.nvim_create_autocmd(
+        { "BufWinEnter", "BufEnter", "WinEnter", "FileType" },
+        {
+          group = group,
+          callback = function()
+            if vim.api.nvim_get_current_tabpage() ~= tabpage then return end
+            local win = vim.api.nvim_get_current_win()
+            if vim.w[win].codediff_restore ~= 1 then return end
+            enable_word_wrap(win)
+
+            local session = lifecycle.get_session(tabpage)
+            if not session or not (session.refresh and session.refresh.loading) then return end
+
+            -- The panes get their new buffers before CodeDiff finishes loading
+            -- and installs its mappings. Keep hunk keys connected to the queue.
+            local keys = require("codediff.keymap.resolve").keymaps_for "view"
+            local buf = vim.api.nvim_get_current_buf()
+            for action, desc in pairs { next_hunk = "Next hunk", prev_hunk = "Previous hunk" } do
+              if not lifecycle.owns_keymap(tabpage, keys[action], "n", buf) then
+                lifecycle.set_buf_keymap(tabpage, buf, "n", keys[action], navigation[action], {
+                  desc = desc,
+                  silent = true,
+                  nowait = true,
+                })
+              end
+            end
+          end,
+        }
+      )
+    end
+
+    -- Bare file comparisons create their session after CodeDiffOpen. Register
+    -- after the session's own autocmds so they cannot turn wrap off again.
+    local create_session = lifecycle.create_session
+    lifecycle.create_session = function(tabpage, ...)
+      local result = create_session(tabpage, ...)
+      keep_diff_windows_wrapped(tabpage)
+      return result
     end
 
     local function remap_highlight(win, from, to)
@@ -319,7 +478,19 @@ return {
     end
 
     local function refresh_indent_scopes(tabpage)
-      if not tabpage or not vim.api.nvim_tabpage_is_valid(tabpage) then return end
+      if tabpage ~= vim.api.nvim_get_current_tabpage() then return end
+      local snacks = rawget(_G, "Snacks")
+      if
+        snacks
+        and not package.loaded["snacks.indent"]
+        and snacks.config.indent.enabled
+        and vim.g.snacks_indent ~= false
+      then
+        -- Revision buffers use BufReadCmd, so Snacks never sees the
+        -- BufReadPost event that normally starts its indent renderer.
+        snacks.indent.enable()
+      end
+
       for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
         if vim.w[win].codediff_restore == 1 then
           vim.api.nvim_win_call(
@@ -440,21 +611,6 @@ return {
         if not win then return end
 
         local line = state.line
-        if state.follow_change and line then
-          local session = lifecycle.get_session(tabpage)
-          local changes = session and session.stored_diff_result and session.stored_diff_result.changes or {}
-          local is_changed_line = false
-          for _, change in ipairs(changes) do
-            local start_line = change.modified.start_line
-            local end_line = change.modified.end_line
-            if (line >= start_line and line < end_line) or (start_line == end_line and line == start_line) then
-              is_changed_line = true
-              break
-            end
-          end
-          if not is_changed_line then line = nil end
-        end
-
         -- Enter the pane before restoring its cursor and centering the view.
         vim.api.nvim_set_current_win(win)
         if line then
@@ -500,7 +656,6 @@ return {
         local data = args.data or {}
         if not data.tabpage or type(data.path) ~= "string" then return end
         vim.g.viter_codediff_last_tab = data.tabpage
-        vim.g.viter_codediff_last_file = data.path
         fix_comment_contrast(data.tabpage)
         schedule_indent_refresh(data.tabpage)
         vim.schedule(function() wrap_diff_windows(data.tabpage) end)
@@ -514,14 +669,13 @@ return {
           return
         end
         pending[data.tabpage] = {
-          deadline = follow and follow.request.deadline or vim.uv.hrtime() + 5e9,
+          deadline = follow.request.deadline,
           file = selected,
           relative = data.path,
-          line = follow and follow.line,
-          col = follow and follow.request.col,
-          side = follow and follow.request.side,
-          follow_change = follow ~= nil and not follow.request.resume,
-          follow_request = follow and follow.request,
+          line = follow.line,
+          col = follow.request.col,
+          side = follow.request.side,
+          follow_request = follow.request,
         }
         settle_view(data.tabpage)
       end,
@@ -560,7 +714,7 @@ return {
       end,
     })
 
-    -- Save before i/tabclose destroys the diff windows. Ignore intermediate
+    -- Remember the position if the tab is closed. Ignore intermediate
     -- window switches while CodeDiff is still selecting/rendering a file.
     vim.api.nvim_create_autocmd({ "WinLeave", "TabLeave" }, {
       group = group,
@@ -571,34 +725,6 @@ return {
         if not pending[tabpage] and not (session and session.refresh and session.refresh.loading) then
           require("funcs").remember_codediff_position(tabpage, vim.api.nvim_get_current_win())
         end
-      end,
-    })
-
-    vim.api.nvim_create_autocmd("BufEnter", {
-      group = group,
-      callback = function(args)
-        local diff_tab = vim.g.viter_codediff_last_tab
-        if
-          type(diff_tab) ~= "number"
-          or not vim.api.nvim_tabpage_is_valid(diff_tab)
-          or vim.api.nvim_get_current_tabpage() == diff_tab
-        then
-          return
-        end
-
-        local root = vim.g.viter_codediff_last_root
-        local relative = vim.g.viter_codediff_last_file
-        if type(root) ~= "string" or type(relative) ~= "string" then return end
-
-        local expected = vim.fs.normalize(vim.fs.joinpath(root, relative))
-        if vim.fs.normalize(vim.api.nvim_buf_get_name(args.buf)) ~= expected then return end
-
-        local win = vim.api.nvim_get_current_win()
-        vim.schedule(function()
-          if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == args.buf then
-            vim.api.nvim_win_call(win, function() vim.cmd "normal! zz" end)
-          end
-        end)
       end,
     })
 

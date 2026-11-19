@@ -657,8 +657,8 @@ local function window_with_filetype(filetype)
   end
 end
 
-local function codediff_tab_info(tabpage)
-  local is_codediff = false
+local function codediff_tab_info(tabpage, lifecycle)
+  local is_codediff = lifecycle and lifecycle.get_session(tabpage) ~= nil
   local real_file
 
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
@@ -666,7 +666,7 @@ local function codediff_tab_info(tabpage)
     if vim.api.nvim_buf_is_valid(bufnr) then
       local name = vim.api.nvim_buf_get_name(bufnr)
       local filetype = vim.bo[bufnr].filetype
-      if filetype == "codediff-explorer" or filetype == "codediff-history" or vim.startswith(name, "codediff://") then
+      if filetype == "codediff-explorer" or filetype == "codediff-history" then
         is_codediff = true
       elseif not real_file and name ~= "" and vim.bo[bufnr].buftype == "" and vim.fn.filereadable(name) == 1 then
         real_file = name
@@ -678,31 +678,30 @@ local function codediff_tab_info(tabpage)
 end
 
 local function cleanup_active_codediff_tabs()
+  local lifecycle = package.loaded["codediff.ui.lifecycle"]
+  local tabs = vim.api.nvim_list_tabpages()
   local diff_tabs = {}
   local fallback_file
-  for _, tabpage in ipairs(vim.api.nvim_list_tabpages()) do
-    local is_codediff, tab_file = codediff_tab_info(tabpage)
+  for _, tabpage in ipairs(tabs) do
+    local is_codediff, tab_file = codediff_tab_info(tabpage, lifecycle)
     if is_codediff then
+      if lifecycle and not lifecycle.confirm_close_with_unsaved(tabpage) then return false end
       table.insert(diff_tabs, tabpage)
       fallback_file = fallback_file or tab_file
     end
   end
   if #diff_tabs == 0 then return true end
 
-  if #diff_tabs == #vim.api.nvim_list_tabpages() then
+  if #diff_tabs == #tabs then
     vim.cmd "tabnew"
     if fallback_file then pcall(function() vim.cmd("edit " .. vim.fn.fnameescape(fallback_file)) end) end
   end
 
-  table.sort(
-    diff_tabs,
-    function(a, b) return vim.api.nvim_tabpage_get_number(a) > vim.api.nvim_tabpage_get_number(b) end
-  )
-
   for _, tabpage in ipairs(diff_tabs) do
     if vim.api.nvim_tabpage_is_valid(tabpage) then
-      vim.api.nvim_set_current_tabpage(tabpage)
-      if not pcall(function() vim.cmd "tabclose" end) then return false end
+      -- Close the tab in place. CodeDiff's close action can also quit Neovim.
+      vim.cmd(vim.api.nvim_tabpage_get_number(tabpage) .. "tabclose")
+      if lifecycle then lifecycle.cleanup(tabpage) end
     end
   end
 
@@ -1041,7 +1040,6 @@ function M.select_codediff_follow(tabpage)
   local request = codediff_follow_request
   if not request or not tabpage or not vim.api.nvim_tabpage_is_valid(tabpage) then return false end
 
-  request.opened = true
   local lifecycle = require "codediff.ui.lifecycle"
   local explorer = lifecycle.get_panel_view(tabpage)
   local session = lifecycle.get_session(tabpage)
@@ -1062,13 +1060,7 @@ function M.select_codediff_follow(tabpage)
 
   if not target then
     clear_codediff_follow_request(request)
-    if request.opening and not request.resume then
-      lifecycle.close(tabpage)
-      if request.source_tab and vim.api.nvim_tabpage_is_valid(request.source_tab) then
-        vim.api.nvim_set_current_tabpage(request.source_tab)
-      end
-    end
-    vim.notify(request.resume and "Previous diff file has no changes now" or "File has no changes", vim.log.levels.INFO)
+    vim.notify("Previous diff file has no changes now", vim.log.levels.INFO)
     return false
   end
 
@@ -1089,23 +1081,6 @@ function M.select_codediff_follow(tabpage)
   return true
 end
 
-local function new_codediff_follow_request()
-  local current_file = vim.api.nvim_buf_get_name(0)
-  if current_file == "" then
-    vim.notify("Current buffer has no file", vim.log.levels.INFO)
-    return nil
-  end
-
-  local request = {
-    file = vim.fs.normalize(current_file),
-    line = vim.api.nvim_win_get_cursor(0)[1],
-    source_tab = vim.api.nvim_get_current_tabpage(),
-    deadline = vim.uv.hrtime() + 5e9,
-  }
-  codediff_follow_request = request
-  return request
-end
-
 local function expire_codediff_follow_request(request)
   vim.defer_fn(function()
     if codediff_follow_request == request then
@@ -1116,19 +1091,14 @@ local function expire_codediff_follow_request(request)
   end, 5000)
 end
 
-function M.follow_codediff()
-  local request = new_codediff_follow_request()
-  if not request then return end
+function M.close_codediff()
+  if not cleanup_active_codediff_tabs() then return end
 
-  local tabpage = active_codediff_tab()
-  if tabpage then
-    M.select_codediff_follow(tabpage)
-    return
-  end
-
-  request.opening = true
-  if not reopen_last_codediff() then M.open_codediff() end
-  expire_codediff_follow_request(request)
+  codediff_resume_position = nil
+  clear_codediff_follow_request()
+  vim.g.viter_codediff_last_tab = nil
+  vim.g.viter_codediff_last_args = nil
+  vim.g.viter_codediff_last_root = nil
 end
 
 function M.open_codediff_main()
@@ -1175,12 +1145,7 @@ function M.continue_codediff()
   end
 
   if codediff_resume_position then
-    -- Reuse the asynchronous file-selection path, but restore the exact cursor
-    -- instead of applying rw's "current hunk or first change" behavior.
     local request = vim.deepcopy(codediff_resume_position)
-    request.resume = true
-    request.opening = true
-    request.source_tab = vim.api.nvim_get_current_tabpage()
     request.deadline = vim.uv.hrtime() + 5e9
     codediff_follow_request = request
     if not reopen_last_codediff() then M.open_codediff() end
